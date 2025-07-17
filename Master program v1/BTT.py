@@ -50,13 +50,13 @@ class BTT:
         self.send_gcode(2, 'G28 Y')
         
    def home_rot1(self):  
-        self.send_gcode(2, 'G28 X')
+        self.send_gcode(3, 'G28 X')
        
     def home_rot2(self):
-        self.send_gcode(2, 'G28 Y')
+        self.send_gcode(3, 'G28 Y')
 
     def home_rot3(self):
-         self.send_gcode(2, 'G28 Z')
+         self.send_gcode(3, 'G28 Z')
 
     def home_all_rot(self):
         self.home_rot1()
@@ -65,15 +65,15 @@ class BTT:
         
     def rot_1(self, angle_x, feedrate):
         travel_mm = angle_x / OBJECTIVE_MOUNT   
-        self.send_gcode(2, f'G0 A{travel_mm:.3f} F{feedrate}')
+        self.send_gcode(3, f'G0 A{travel_mm:.3f} F{feedrate}')
 
     def rot_2(self, angle_y, feedrate):
         travel_mm = angle_y / OBJECTIVE_MOUNT   
-        self.send_gcode(2, f'G0 B{travel_mm:.3f} F{feedrate}')
+        self.send_gcode(3, f'G0 B{travel_mm:.3f} F{feedrate}')
 
     def rot_3(self, angle_z, feedrate):
         travel_mm = angle_z / OBJECTIVE_MOUNT   
-        self.send_gcode(2, f'G0 C{travel_mm:.3f} F{feedrate}')
+        self.send_gcode(3, f'G0 C{travel_mm:.3f} F{feedrate}')
         
     def close(self):
         self.d1.close()
