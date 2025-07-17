@@ -21,7 +21,7 @@ DEGREE_SYMBOL = "\N{DEGREE SIGN}"
 DEFAULT_FEEDRATE = 720  # ° min⁻¹ — tune for your hardware
 
 
-class RotationMountTab(QWidget):
+class ControlsTab(QWidget):
     """GUI tab controlling three rotation mounts via an InstrumentManager."""
 
     _KEYS = {1: "Mount1", 2: "Mount2", 3: "Mount3"}
