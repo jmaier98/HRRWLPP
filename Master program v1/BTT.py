@@ -49,7 +49,7 @@ class BTT:
         self.send_gcode(2, 'G28 X')
         self.send_gcode(2, 'G28 Y')
         
-   def home_rot1(self):  
+    def home_rot1(self):  
         self.send_gcode(3, 'G28 X')
        
     def home_rot2(self):

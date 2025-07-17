@@ -5,12 +5,12 @@ import numpy as np
 
 from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QPushButton,
-    QLabel, QSlider, QMessageBox
+    QLabel, QSlider, QMessageBox, QLineEdit 
 )
 from PyQt6.QtCore import (
     QTimer, Qt, QObject, QThread, pyqtSignal, QPoint
 )
-from PyQt6.QtGui import QImage, QPixmap, QPainter, QPen
+from PyQt6.QtGui import QImage, QPixmap, QPainter, QPen, QDoubleValidator
 
 DEADZONE  = 0.15
 SCALE_XY  = 2.0
@@ -147,6 +147,7 @@ class WebcamTab(QWidget):
         super().__init__()
         self.IM = instrument_manager
         self.shutter = self.IM.get("Shutter")
+        self.stage = self.IM.get("ESP")
         self.cap      = None
         self.timer    = QTimer()
         self.timer.timeout.connect(self._update_frame)
@@ -183,7 +184,29 @@ class WebcamTab(QWidget):
         ctrl.addWidget(QLabel("LED Brightness"))
         ctrl.addWidget(self.brightness_slider)
         ctrl.addStretch()
+        
+        # --- Stage Controls -------------------------------------------------
+        pos_row = QHBoxLayout()
+        pos_row.addWidget(QLabel("Stage Pos (mm):"))
+        self.stage_pos_edit = QLineEdit("0.0")
+        self.stage_pos_edit.setValidator(QDoubleValidator(-75, 75, 3))
+        pos_row.addWidget(self.stage_pos_edit)
+        self.stage_go_btn = QPushButton("Go")
+        self.stage_go_btn.clicked.connect(self._on_stage_go)
+        pos_row.addWidget(self.stage_go_btn)
+        ctrl.addLayout(pos_row)
 
+        spd_row = QHBoxLayout()
+        spd_row.addWidget(QLabel("Stage Speed (mm/s):"))
+        self.stage_speed_edit = QLineEdit("30")  # default/example
+        self.stage_speed_edit.setValidator(QDoubleValidator(0.0, 25, 2))
+        spd_row.addWidget(self.stage_speed_edit)
+        self.stage_speed_set_btn = QPushButton("Set")
+        self.stage_speed_set_btn.clicked.connect(self._on_stage_speed_set)
+        spd_row.addWidget(self.stage_speed_set_btn)
+        ctrl.addLayout(spd_row)
+        # --------------------------------------------------------------------
+        
         # Shutter control buttons
         self.open_pump_btn = QPushButton("Open Pump Shutter")
         self.open_pump_btn.clicked.connect(self.shutter.openPump)
@@ -219,6 +242,14 @@ class WebcamTab(QWidget):
     def _on_target_moved(self, x, y):
         self.coord_label.setText(f"Coords: ({x}, {y})")
 
+    def _on_stage_go(self):
+        pos = float(self.stage_pos_edit.text())
+        self.stage.move_absolute(1, pos)
+
+    def _on_stage_speed_set(self):
+        speed = float(self.stage_speed_edit.text())
+        self.stage.set_speed(1, speed)
+        
     def start_all(self):
         # 1) camera
         if self.cap is None:
