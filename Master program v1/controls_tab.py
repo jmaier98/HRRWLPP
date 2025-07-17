@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from functools import partial
-from typing import Callable, Mapping
+from typing import Callable
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
@@ -18,35 +18,53 @@ from PyQt6.QtWidgets import (
 )
 
 DEGREE_SYMBOL = "\N{DEGREE SIGN}"
-DEFAULT_FEEDRATE = 720  # ° min⁻¹ – tweak to taste
+DEFAULT_FEEDRATE = 720  # ° min⁻¹ — tune for your hardware
 
 
 class RotationMountTab(QWidget):
-    """PyQt tab controlling three rotation mounts via an InstrumentManager."""
+    """GUI tab controlling three rotation mounts via an InstrumentManager."""
 
-    _MOUNT_KEYS: Mapping[int, str] = {1: "Mount1", 2: "Mount2", 3: "Mount3"}
+    _KEYS = {1: "Mount1", 2: "Mount2", 3: "Mount3"}
 
     # ------------------------------------------------------------------
-    # construction
+    # construction — mirrors powermeter_tab.py
     # ------------------------------------------------------------------
 
-    def __init__(self, instrument_manager: Mapping[str, object], parent: QWidget | None = None):
-        super().__init__(parent)
-        self.im = instrument_manager
+    def __init__(self, instrument_manager):
+        super().__init__()
+        self.IM = instrument_manager
 
-        self.setWindowTitle("Rotation Mount Control")
-
+        # ─── overall vertical layout ───────────────────────────────────
         main_layout = QVBoxLayout(self)
-        main_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        # build three identical panels
+        # ─── 1. button bar (Horizontal) ────────────────────────────────
+        btn_layout = QHBoxLayout()
+        main_layout.addLayout(btn_layout)
+
+        self.home_all_btn = QPushButton("Home All")
+        self.home_all_btn.clicked.connect(self.home_all)
+        btn_layout.addWidget(self.home_all_btn)
+
+        self.stop_all_btn = QPushButton("Stop All")
+        self.stop_all_btn.setEnabled(False)  # reserved for future use
+        self.stop_all_btn.clicked.connect(self.stop_all)
+        btn_layout.addWidget(self.stop_all_btn)
+
+        btn_layout.addStretch()
+
+        # ─── 2. control column (Vertical) ──────────────────────────────
+        ctrl_layout = QVBoxLayout()
+        main_layout.addLayout(ctrl_layout)
+
         for idx in (1, 2, 3):
-            main_layout.addWidget(self._build_panel(idx))
+            ctrl_layout.addWidget(self._build_panel(idx))
 
-        main_layout.addStretch()
+        ctrl_layout.addStretch()
+
+        # (powermeter_tab shows a plot + large numeric label here; we skip.)
 
     # ------------------------------------------------------------------
-    # UI helpers
+    # build each mount sub‑panel
     # ------------------------------------------------------------------
 
     def _build_panel(self, idx: int) -> QGroupBox:
@@ -58,26 +76,34 @@ class RotationMountTab(QWidget):
         angle_edit = QLineEdit()
         angle_edit.setPlaceholderText(f"Target angle (0–360{DEGREE_SYMBOL})")
 
-        # buttons
         move_btn = QPushButton("Move")
-        home_btn = QPushButton("Home")
-
-        # wiring
         move_btn.clicked.connect(partial(self._move_clicked, idx, angle_edit))
+
+        home_btn = QPushButton("Home")
         home_btn.clicked.connect(partial(self._home_clicked, idx))
 
-        # layout
-        btn_row = QHBoxLayout()
-        btn_row.addWidget(move_btn)
-        btn_row.addWidget(home_btn)
-
+        # lay out widgets
         form.addRow(QLabel("Target Angle"), angle_edit)
+        btn_row = QHBoxLayout(); btn_row.addWidget(move_btn); btn_row.addWidget(home_btn)
         form.addRow(btn_row)
 
         return box
 
     # ------------------------------------------------------------------
-    # slot implementations
+    # top‑bar actions
+    # ------------------------------------------------------------------
+
+    def home_all(self):
+        for idx in (1, 2, 3):
+            self._home_clicked(idx)
+        self.stop_all_btn.setEnabled(True)
+
+    def stop_all(self):
+        # placeholder; if mounts supported stop/abort we'd call it here.
+        self.stop_all_btn.setEnabled(False)
+
+    # ------------------------------------------------------------------
+    # per‑mount actions
     # ------------------------------------------------------------------
 
     def _move_clicked(self, idx: int, angle_edit: QLineEdit) -> None:
@@ -102,7 +128,6 @@ class RotationMountTab(QWidget):
         mount = self._mount(idx)
         if mount is None:
             return
-
         self._invoke(mount, "home", idx)
 
     # ------------------------------------------------------------------
@@ -110,27 +135,26 @@ class RotationMountTab(QWidget):
     # ------------------------------------------------------------------
 
     def _mount(self, idx: int):
-        key = self._MOUNT_KEYS[idx]
+        key = self._KEYS[idx]
         try:
-            return self.im[key]
+            return self.IM.get(key)
         except KeyError:
-            self._error(idx, f"InstrumentManager lacks entry '{key}'.")
+            self._error(idx, f"InstrumentManager is missing '{key}'.")
             return None
 
     def _invoke(self, mount, method_name: str, idx: int, *args):
         try:
             method: Callable = getattr(mount, method_name)
         except AttributeError:
-            self._error(idx, f"Mount driver lacks method '{method_name}()'.")
+            self._error(idx, f"Mount driver lacks '{method_name}()'.")
             return
-
         try:
             method(*args)
         except Exception as exc:  # noqa: BLE001
             self._error(idx, f"Driver error: {exc}")
 
     # ------------------------------------------------------------------
-    # message box helper
+    # message helper
     # ------------------------------------------------------------------
 
     def _error(self, idx: int, msg: str) -> None:
