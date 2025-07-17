@@ -76,6 +76,8 @@ def move_small_motors(ser, joystick):
         move_small_motors.angle2 = new_angle2
         print(f"Servo 2 toggled to {new_angle2}")
         time.sleep(0.2)  # Debounce delay
+
+    
         
           
         
