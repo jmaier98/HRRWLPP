@@ -3,7 +3,7 @@ import time
 PELLICLE = 60
 EMPTY = 20
 POWERMETER = 92
-
+OBJECTIVE_MOUNT = 3.6
 class BTT:
     def __init__(self):
         super().__init__()
@@ -33,7 +33,7 @@ class BTT:
     def cryoZ(self, dz, feed):
         self.send_gcode(1, f'G1 Z{dz} F{feed:.1f}')
 
-    def objectiveZ(self, dz, feed):
+    def rotZ(self, dz, feed):
         self.send_gcode(1, f'G1 E{dz} F{feed:.1f}')
         
     def pellicles(self):
@@ -48,6 +48,32 @@ class BTT:
     def homeRails(self):
         self.send_gcode(2, 'G28 X')
         self.send_gcode(2, 'G28 Y')
+        
+   def home_rot1(self):  
+        self.send_gcode(2, 'G28 X')
+       
+    def home_rot2(self):
+        self.send_gcode(2, 'G28 Y')
+
+    def home_rot3(self):
+         self.send_gcode(2, 'G28 Z')
+
+    def home_all_rot(self):
+        self.home_rot1()
+        self.home_rot2()
+        self.home_rot3()
+        
+    def rot_1(self, angle_x, feedrate):
+        travel_mm = angle_x / OBJECTIVE_MOUNT   
+        self.send_gcode(2, f'G0 A{travel_mm:.3f} F{feedrate}')
+
+    def rot_2(self, angle_y, feedrate):
+        travel_mm = angle_y / OBJECTIVE_MOUNT   
+        self.send_gcode(2, f'G0 B{travel_mm:.3f} F{feedrate}')
+
+    def rot_3(self, angle_z, feedrate):
+        travel_mm = angle_z / OBJECTIVE_MOUNT   
+        self.send_gcode(2, f'G0 C{travel_mm:.3f} F{feedrate}')
         
     def close(self):
         self.d1.close()
