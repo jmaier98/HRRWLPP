@@ -1,106 +1,122 @@
+import time
 from functools import partial
-from typing import Callable
-
 from PyQt6.QtWidgets import (
-    QHBoxLayout, QLineEdit, QMessageBox, QPushButton,
-    QSizePolicy, QVBoxLayout, QWidget, QGroupBox, QFormLayout, QLabel
+    QWidget, QVBoxLayout, QHBoxLayout,
+    QLabel, QLineEdit, QPushButton, QMessageBox
 )
 
-DEGREE_SYMBOL = "\N{DEGREE SIGN}"
+# Default feedrate for angular motions (degrees/min)
 DEFAULT_FEEDRATE = 720
 
 class ControlsTab(QWidget):
-    _KEYS = {1: "Mount1", 2: "Mount2", 3: "Mount3"}
-
     def __init__(self, instrument_manager):
         super().__init__()
         self.IM = instrument_manager
-        # store controls for external access
-        self.angle_edits = {}
+        # retrieve BTT controller
+        try:
+            self.btt = self.IM.get("BTT")
+        except KeyError:
+            raise RuntimeError("BTT controller not found in InstrumentManager")
+
+        # top-level layout
+        main_layout = QVBoxLayout(self)
+        btn_layout = QHBoxLayout()
+        ctrl_layout = QVBoxLayout()
+        main_layout.addLayout(btn_layout)
+        main_layout.addLayout(ctrl_layout)
+
+        # shared controls
+        self.move_all_btn = QPushButton("Move All")
+        self.move_all_btn.clicked.connect(self.move_all)
+        self.home_all_btn = QPushButton("Home All")
+        self.home_all_btn.clicked.connect(self.home_all)
+        btn_layout.addWidget(self.move_all_btn)
+        btn_layout.addWidget(self.home_all_btn)
+        btn_layout.addStretch()
+
+        # per-controller widgets storage
+        self.angle_entries = {}
         self.move_buttons = {}
         self.home_buttons = {}
 
-        main_layout = QVBoxLayout(self)
-        # top button bar
-        btn_bar = QHBoxLayout()
-        main_layout.addLayout(btn_bar)
-        self.home_all_btn = QPushButton("Home All")
-        self.home_all_btn.clicked.connect(self.home_all)
-        btn_bar.addWidget(self.home_all_btn)
-        self.stop_all_btn = QPushButton("Stop All")
-        self.stop_all_btn.setEnabled(False)
-        self.stop_all_btn.clicked.connect(self.stop_all)
-        btn_bar.addWidget(self.stop_all_btn)
-        btn_bar.addStretch()
-
-        # control panels
-        ctrl_col = QVBoxLayout()
-        main_layout.addLayout(ctrl_col)
+        # build individual controller controls
         for idx in (1, 2, 3):
-            # create widgets
+            # label + angle entry
+            label = QLabel(f"Controller {idx} Angle (°):")
             angle_edit = QLineEdit()
-            angle_edit.setPlaceholderText(f"Target angle (0–360{DEGREE_SYMBOL})")
+            angle_edit.setPlaceholderText("0–360")
+            # action buttons
             move_btn = QPushButton("Move")
+            move_btn.clicked.connect(partial(self._move_one, idx))
             home_btn = QPushButton("Home")
+            home_btn.clicked.connect(partial(self._home_one, idx))
+            
             # store
-            self.angle_edits[idx] = angle_edit
+            self.angle_entries[idx] = angle_edit
             self.move_buttons[idx] = move_btn
             self.home_buttons[idx] = home_btn
-            # connect
-            move_btn.clicked.connect(partial(self._move_clicked, idx))
-            home_btn.clicked.connect(partial(self._home_clicked, idx))
-            # build panel
-            panel = QGroupBox(f"Rotation Mount {idx}")
-            panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
-            form = QFormLayout(panel)
-            form.addRow(QLabel("Target Angle"), angle_edit)
+
+            # layout row
             row = QHBoxLayout()
-            row.addWidget(move_btn); row.addWidget(home_btn)
-            form.addRow(row)
-            ctrl_col.addWidget(panel)
-        ctrl_col.addStretch()
+            row.addWidget(label)
+            row.addWidget(angle_edit)
+            row.addWidget(move_btn)
+            row.addWidget(home_btn)
+            ctrl_layout.addLayout(row)
+
+        ctrl_layout.addStretch()
+
+    def move_all(self):
+        """Move all controllers to their entered angles."""
+        for idx in (1, 2, 3):
+            self._move_one(idx)
 
     def home_all(self):
-        for idx in (1,2,3): self._home_clicked(idx)
-        self.stop_all_btn.setEnabled(True)
+        """Home all controllers."""
+        try:
+            self.btt.home_rot1()
+            self.btt.home_rot2()
+            self.btt.home_rot3()
+        except Exception as e:
+            QMessageBox.critical(self, "Controllers Error", f"Home All failed: {e}")
 
-    def stop_all(self):
-        self.stop_all_btn.setEnabled(False)
-
-    def _move_clicked(self, idx: int):
-        text = self.angle_edits[idx].text().strip()
+    def _move_one(self, idx):
+        """Move a single controller to the entered angle."""
+        text = self.angle_entries[idx].text().strip()
         try:
             angle = float(text)
         except ValueError:
-            return self._error(idx, "Enter a valid number for the angle.")
+            return self._error(idx, "Enter a valid angle number.")
         if not 0 <= angle <= 360:
-            return self._error(idx, f"Angle must be 0–360{DEGREE_SYMBOL}.")
-        mount = self._mount(idx)
-        if not mount: return
-        self._invoke(mount, "move_to_angle", idx, angle, DEFAULT_FEEDRATE)
+            return self._error(idx, "Angle must be between 0 and 360°.")
 
-    def _home_clicked(self, idx: int):
-        mount = self._mount(idx)
-        if not mount: return
-        self._invoke(mount, "home", idx)
-
-    def _mount(self, idx: int):
-        key = self._KEYS[idx]
         try:
-            return self.IM[key]
-        except KeyError:
-            self._error(idx, f"Missing '{key}' in InstrumentManager.")
-            return None
-
-    def _invoke(self, mount, method: str, idx: int, *args):
-        try:
-            func: Callable = getattr(mount, method)
-        except AttributeError:
-            return self._error(idx, f"Driver lacks '{method}()'.")
-        try:
-            func(*args)
+            # dispatch to BTT
+            if idx == 1:
+                self.btt.rot_1(angle, DEFAULT_FEEDRATE)
+            elif idx == 2:
+                self.btt.rot_2(angle, DEFAULT_FEEDRATE)
+            else:
+                self.btt.rot_3(angle, DEFAULT_FEEDRATE)
         except Exception as e:
-            self._error(idx, f"Driver error: {e}")
+            self._error(idx, f"Move failed: {e}")
 
-    def _error(self, idx: int, msg: str):
-        QMessageBox.critical(self, "Rotation Mount Error", f"Mount {idx}: {msg}")
+    def _home_one(self, idx):
+        """Home a single controller."""
+        try:
+            if idx == 1:
+                self.btt.home_rot1()
+            elif idx == 2:
+                self.btt.home_rot2()
+            else:
+                self.btt.home_rot3()
+        except Exception as e:
+            self._error(idx, f"Home failed: {e}")
+
+    def _error(self, idx, msg):
+        """Show an error dialog for a specific controller."""
+        QMessageBox.critical(self,
+            "Controllers Error",
+            f"Controller {idx}: {msg}"
+        )
+"""
