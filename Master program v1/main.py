@@ -5,6 +5,7 @@ from PyQt6.QtWidgets import QApplication, QMainWindow, QTabWidget, QWidget, QVBo
 # import your tabs
 from webcam_tab_v2     import WebcamTab
 from powermeter_tab import PowerMeterTab
+from controls_tab import ControlsTab
 from instrument_manager import InstrumentManager
 
 class MainWindow(QMainWindow):
@@ -18,10 +19,7 @@ class MainWindow(QMainWindow):
         self.instrument_manager = instrument_manager
         
         # Tab 1: placeholder
-        tab1 = QWidget()
-        v1 = QVBoxLayout(tab1)
-        v1.addWidget(QLabel("Placeholder content for Tab 1"))
-        tabs.addTab(tab1, "Tab 1")
+        tabs.addTab(ControlsTab(instrument_manager), "Controls")
 
         # Tab 2: power meter
         tabs.addTab(PowerMeterTab(instrument_manager), "Power Meter")

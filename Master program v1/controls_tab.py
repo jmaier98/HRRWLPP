@@ -119,4 +119,4 @@ class ControlsTab(QWidget):
             "Controllers Error",
             f"Controller {idx}: {msg}"
         )
-"""
+
