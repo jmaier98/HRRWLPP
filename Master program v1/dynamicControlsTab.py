@@ -52,7 +52,8 @@ class DynamicControlsTab(QWidget):
             'home pump waveplate',
             'home probe waveplate',
             'home detector polarizer',
-            'home beamsplitter waveplate'
+            'home beamsplitter waveplate',
+            
         ]
         self.entries = []
         self.go_buttons = []
@@ -131,4 +132,15 @@ class DynamicControlsTab(QWidget):
             self.btt.home_rot1()
         if cmd == 'home probe polarizer':
             self.btt.home_rot2()
+        if cmd == 'pump power':
+            goal_power = 
+            reading = self.btt.get_pm_reading()
+            angle = 0
+            for _ in range(360): 
+                if goal_power - 10 <= reading <= goal_power + 10:
+                    return "Power in range"
+                self.btt.rot_3(angle, DEFAULT_FEEDRATE)
+                reading = self.btt.get_pm_reading()
+                angle += 1
+            return "Power out of range"
             
