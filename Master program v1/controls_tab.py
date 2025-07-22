@@ -75,8 +75,9 @@ class ControlsTab(QWidget):
         """Home all controllers."""
         try:
             self.btt.home_rot1()
-            self.btt.home_rot2()
-            self.btt.home_rot3()
+            #self.btt.home_rot2()
+            #self.btt.home_rot3()
+            self.btt.homeRails()
         except Exception as e:
             QMessageBox.critical(self, "Controllers Error", f"Home All failed: {e}")
 

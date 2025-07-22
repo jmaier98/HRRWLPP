@@ -10,6 +10,12 @@ class BTT:
         self.baud = 115200
         self.d1 = serial.Serial('COM3', self.baud, timeout=1) #cryo and focus
         time.sleep(0.5)
+        self.d1.write(('G21\n').encode())
+        time.sleep(0.05)
+        self.d1.write(('G91\n').encode())
+        time.sleep(0.05)
+        self.d1.write(('G92 X0 Y0 Z0\n').encode())
+        time.sleep(0.05)
         print("opened d1")
         self.d2 = serial.Serial('COM9', self.baud, timeout=1) #rails and 2 rots
         time.sleep(0.5)
@@ -37,13 +43,13 @@ class BTT:
         self.send_gcode(1, f'G1 E{dz} F{feed:.1f}')
         
     def pellicles(self):
-        self.send_gcode(2, f'G0 X{PELLICLE} Y{PELLICLE} F{5000}')
+        self.send_gcode(2, f'G0 X{PELLICLE} Y{PELLICLE} F{3000}')
 
     def clear(self):
-        self.send_gcode(2, f'G0 X{EMPTY} Y{EMPTY} F{5000}')
+        self.send_gcode(2, f'G0 X{EMPTY} Y{EMPTY} F{3000}')
 
     def powermeter(self):
-        self.send_gcode(2, f'G0 X{POWERMETER} Y{EMPTY} F{5000}')
+        self.send_gcode(2, f'G0 X{POWERMETER} Y{EMPTY} F{3000}')
 
     def homeRails(self):
         self.send_gcode(2, 'G28 X')
