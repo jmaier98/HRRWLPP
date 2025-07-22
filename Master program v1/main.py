@@ -6,6 +6,7 @@ from PyQt6.QtWidgets import QApplication, QMainWindow, QTabWidget, QWidget, QVBo
 from webcam_tab_v2     import WebcamTab
 from powermeter_tab import PowerMeterTab
 from controls_tab import ControlsTab
+from dynamicControlsTab import DynamicControlsTab
 from instrument_manager import InstrumentManager
 
 class MainWindow(QMainWindow):
@@ -19,7 +20,7 @@ class MainWindow(QMainWindow):
         self.instrument_manager = instrument_manager
         
         # Tab 1: placeholder
-        tabs.addTab(ControlsTab(instrument_manager), "Controls")
+        tabs.addTab(ControlsTab(instrument_manager), "Rotation stages")
 
         # Tab 2: power meter
         tabs.addTab(PowerMeterTab(instrument_manager), "Power Meter")
@@ -27,8 +28,8 @@ class MainWindow(QMainWindow):
         # Tab 3: placeholder
         tab3 = QWidget()
         v3 = QVBoxLayout(tab3)
-        v3.addWidget(QLabel("Placeholder content for Tab 3"))
-        tabs.addTab(tab3, "Tab 3")
+        v3.addWidget(QLabel("Dynamic controls"))
+        tabs.addTab(DynamicControlsTab(instrument_manager), "All Controls")
 
         # Tab 4: webcam
         tabs.addTab(WebcamTab(instrument_manager), "Webcam")
