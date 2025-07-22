@@ -45,8 +45,7 @@ class DynamicControlsTab(QWidget):
             'open probe shutter',
             'close pump shutter',
             'close probe shutter',
-            'home rail 1',
-            'home rail 2',
+            'home rails',
             'home pump polarizer',
             'home probe polarizer',
             'home pump waveplate',
@@ -122,6 +121,10 @@ class DynamicControlsTab(QWidget):
             self.btt.rot_1(value, DEFAULT_FEEDRATE)
         if label == 'probe polarizer':
             self.btt.rot_2(value, DEFAULT_FEEDRATE)
+        if label == 'pump half waveplate':
+            self.btt.rot_3(value, DEFAULT_FEEDRATE)
+        if label == 'probe half waveplate':
+            self.btt.rot_4(value, DEFAULT_FEEDRATE)
             
 
     def on_plain_command(self, jdx):
@@ -131,4 +134,6 @@ class DynamicControlsTab(QWidget):
             self.btt.home_rot1()
         if cmd == 'home probe polarizer':
             self.btt.home_rot2()
+        if cmd == 'home rails':
+            self.btt.homeRails()
             

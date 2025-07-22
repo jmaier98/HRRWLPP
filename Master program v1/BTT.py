@@ -22,6 +22,10 @@ class BTT:
         print("opened d2")
         self.d3 = serial.Serial('COM8', self.baud, timeout=1) #4 rots
         time.sleep(0.5)
+        self.d3.write(('M302 S0\n').encode())
+        time.sleep(0.05)
+        self.d3.write(('M17 E\n').encode())
+        time.sleep(0.05)
         print("opened d3")
         
     def send_gcode(self, driver, cmd, wait=0.05):
@@ -78,8 +82,15 @@ class BTT:
         self.send_gcode(3, f'G0 Y{travel_mm:.3f} F{feedrate}')
 
     def rot_3(self, angle_z, feedrate):
-        travel_mm = angle_z / ROTATION_MOUNT   
+        travel_mm = angle_z / (ROTATION_MOUNT*5)  
         self.send_gcode(3, f'G0 Z{travel_mm:.3f} F{feedrate}')
+
+
+    def rot_4(self, angle_e, feedrate):
+        travel_mm = angle_e / (ROTATION_MOUNT * 18.6)
+        self.send_gcode(3, f'G0 E{travel_mm:.3f} F{feedrate}')
+        
+
         
     def close(self):
         self.d1.close()
