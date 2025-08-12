@@ -12,6 +12,7 @@ class ESP300Controller:
         self.inst.write("*CLS")
         self.inst.write("@E0")
         self.inst.write("@1H")
+        print("ESP300 Controller online")
 
     def set_speed(self, axis, speed):
         """Set the absolute velocity for the axis (mm/sec or deg/sec depending on stage)"""

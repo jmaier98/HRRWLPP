@@ -6,39 +6,56 @@ from PyQt6.QtWidgets import QApplication, QMainWindow, QTabWidget, QWidget, QVBo
 from webcam_tab_v2     import WebcamTab
 from powermeter_tab import PowerMeterTab
 from controls_tab import ControlsTab
-from dynamicControlsTab import DynamicControlsTab
+from dynamicControlsTabv2 import DynamicControlsTab
 from instrument_manager import InstrumentManager
+from microscope_state import MicroscopeState
+from imaging_tab_v3 import ImagingTab
+from averaged_scan_tab import AveragedScanTab
 
 class MainWindow(QMainWindow):
-    def __init__(self,instrument_manager):
+    def __init__(self,instrument_manager, state):
         super().__init__()
-        self.setWindowTitle("Multi-Tab PyQt6 Example")
+        self.setWindowTitle("HRRWLPP Microscope")
         self.resize(900, 700)
 
         tabs = QTabWidget()
         self.setCentralWidget(tabs)
         self.instrument_manager = instrument_manager
+        self.state = state
         
         # Tab 1: placeholder
         tabs.addTab(ControlsTab(instrument_manager), "Rotation stages")
 
         # Tab 2: power meter
-        tabs.addTab(PowerMeterTab(instrument_manager), "Power Meter")
+        tabs.addTab(PowerMeterTab(instrument_manager, state), "Power Meter")
 
         # Tab 3: placeholder
         tab3 = QWidget()
         v3 = QVBoxLayout(tab3)
         v3.addWidget(QLabel("Dynamic controls"))
-        tabs.addTab(DynamicControlsTab(instrument_manager), "All Controls")
+        tabs.addTab(DynamicControlsTab(instrument_manager,state), "All Controls")
 
         # Tab 4: webcam
-        tabs.addTab(WebcamTab(instrument_manager), "Webcam")
+        tabs.addTab(WebcamTab(instrument_manager, state), "Webcam")
+
+        # Tab 4: picoscope
+        tabs.addTab(ImagingTab(instrument_manager, state), "Imaging")
+
+        tabs.addTab(AveragedScanTab(instrument_manager, state), "Averaged Scan")
+
+    def closeEvent(self, event):
+        # save state when the window is closing
+        self.state.save()
+        super().closeEvent(event)
 
 if __name__ == "__main__":
-    instrument_manager = InstrumentManager()
+    state = MicroscopeState("microscope_state.json")
+    state.load()
+    instrument_manager = InstrumentManager(state)
     instrument_manager.open_all()
     app = QApplication(sys.argv)
-    w   = MainWindow(instrument_manager)
+    w   = MainWindow(instrument_manager, state)
     w.show()
     app.aboutToQuit.connect(instrument_manager.close_all)
+    app.aboutToQuit.connect(state.save)
     sys.exit(app.exec())

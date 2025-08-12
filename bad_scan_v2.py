@@ -107,7 +107,7 @@ assert_pico_ok(ps.ps5000aSetChannel(
     ps.PS5000A_CHANNEL['PS5000A_CHANNEL_A'],
     1,
     ps.PS5000A_COUPLING['PS5000A_DC'],
-    ps.PS5000A_RANGE['PS5000A_200MV'],
+    ps.PS5000A_RANGE['PS5000A_5V'],
     0.0
 ))
 
@@ -164,6 +164,10 @@ done = False
 
 c_callback = ps.StreamingReadyType(streaming_callback)
 
+print("connected to picoscope")
+time.sleep(5)
+print("commencing scan")
+
 # --- Start streaming ---
 assert_pico_ok(ps.ps5000aRunStreaming(
     chandle,
@@ -176,8 +180,8 @@ assert_pico_ok(ps.ps5000aRunStreaming(
     ratio_mode,
     overview_size
 ))
-xvals = np.linspace(-.1,.1,100)
-yvals = np.linspace(-.1,.1,100)
+xvals = np.linspace(.1, .2,50)
+yvals = np.linspace(0,.1,50)
 t1 = threading.Thread(target=scope_thread, args=(chandle, c_callback), daemon=True)
 t2 = threading.Thread(target=galvo_thread, args=(gpio, xvals, yvals, 0.001), daemon=True)
 
@@ -185,7 +189,7 @@ t1.start()
 t2.start()
 
 # Let them run for however long you like...
-time.sleep(21)
+time.sleep(6)
 
 # Signal both to stop
 stop_event.set()
@@ -216,7 +220,7 @@ data_vals.append(0)
 data_vals.append(0)
 
 
-data = np.array(data_vals[0:10000]).reshape((100, 100))
+data = np.array(data_vals[0:2500]).reshape((50, 50))
 
 # plot
 plt.figure(figsize=(5, 5))

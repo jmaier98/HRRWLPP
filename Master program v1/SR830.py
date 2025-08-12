@@ -16,6 +16,7 @@ class SR830:
         """
         self._rm = pyvisa.ResourceManager()
         self._inst = self._rm.open_resource(f'GPIB::{gpib_addr}::INSTR')
+        print("SR830 online")
 
     def read_x(self):
         """

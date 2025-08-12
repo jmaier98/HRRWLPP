@@ -15,12 +15,14 @@ BUFFER_SIZE = 200
 PM = 92
 Empty = 20
 class PowerMeterTab(QWidget):
-    def __init__(self, instrument_manager):
+    def __init__(self, instrument_manager, state):
         super().__init__()
         self.pm = None
         self.IM = instrument_manager
+        self.state = state
         self.btt = self.IM.get("BTT")
         self.shutter = self.IM.get("Shutter")
+        self.pm = self.IM.get("PM")
         main_layout = QVBoxLayout(self)
         btn_layout  = QHBoxLayout()
         ctrl  = QVBoxLayout()
@@ -80,33 +82,10 @@ class PowerMeterTab(QWidget):
 
         self.timer = QTimer()
         self.timer.timeout.connect(self._update_plot)
-    def find_pm16(self):
-        rm = pyvisa.ResourceManager('@py')       # use pyvisa-py backend
-        resources = rm.list_resources('USB?*::?*::?*::INSTR')          # list all INSTR resources :contentReference[oaicite:1]{index=1}
-        for res in resources:
-            try:
-                inst = rm.open_resource(res)
-                idn = inst.query('*IDN?')
-                if 'PM16-122' in idn:
-                    print(f"Found PM16-122 on {res}")
-                    return res
-            except Exception:
-                continue
-        raise IOError("Could not find PM16-122")
+    
 
 
     def start_measurement(self):
-        if self.pm is None:
-            try:
-                rm = pyvisa.ResourceManager('@py')
-                self.pm = rm.open_resource(self.find_pm16())
-                self.pm.write("SENS:POW:UNIT W")
-                self.pm.write("SENS:POW:RANG AUTO")
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"Failed to open PM16-122:\n{e}")
-                return
-
-        # reset data
         self.btt.powermeter()
         self.start_time = time.time()
         self.idx = 0
@@ -127,10 +106,10 @@ class PowerMeterTab(QWidget):
 
     def _update_plot(self):
         try:
-            p_w = float(self.pm.query("READ?"))
+            p_w = self.pm.read_power()
         except:
             return
-        p_mw = p_w * 1e6
+        p_mw = p_w 
         t = time.time() - self.start_time
 
         self.times[self.idx % BUFFER_SIZE]  = t
@@ -141,10 +120,14 @@ class PowerMeterTab(QWidget):
             xs, ys = self.times[:self.idx], self.powers[:self.idx]
             self.line.set_data(xs, ys)
             self.ax.set_xlim(0, xs.max() + 0.1)
+            ymax = ys.max() * 1.1 if ys.max() > 0 else 20000
+            self.ax.set_ylim(0, ymax)
         else:
             window = self.times[(self.idx - BUFFER_SIZE) % BUFFER_SIZE]
             self.line.set_data(self.times, self.powers)
             self.ax.set_xlim(window, window + self.times.max() - self.times.min())
+            ymax = self.powers.max() * 1.1 if self.powers.max() > 0 else 20000
+            self.ax.set_ylim(0, ymax)
 
         self.ax.relim()
         self.ax.autoscale_view(True, True, True)

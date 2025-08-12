@@ -8,6 +8,7 @@ class SHUTTER:
     def __init__(self, baud=9600, timeout=1):
         self.ser = serial.Serial('COM4', baud, timeout=timeout)
         time.sleep(2)
+        print("Shutter online")
 
     def set_servo(self, servo, angle):
         """

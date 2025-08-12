@@ -15,9 +15,10 @@ from PyQt6.QtGui import QImage, QPixmap, QPainter, QPen, QDoubleValidator
 DEADZONE  = 0.15
 SCALE_XY  = 2.0
 SCALE_Z   = 0.15
+SCALE_GALVO = 0.001
 
 
-def move_big_motors_from_controller(BTT, joystick):
+def move_big_motors_from_controller(BTT, galvo, joystick, state):
     pygame.event.pump()
     # X/Y axes
     x_val = joystick.get_axis(0)
@@ -32,6 +33,34 @@ def move_big_motors_from_controller(BTT, joystick):
         dr = np.hypot(dx, dy)
         feedrate = dr * 1200
         BTT.cryoXY(dx, dy, feedrate)
+        return  # skip Z when XY are moving
+    
+    x2_val = joystick.get_axis(2)
+    y2_val = joystick.get_axis(3)
+    if abs(x2_val) < DEADZONE: x2_val = 0
+    if abs(y2_val) < DEADZONE: y2_val = 0
+
+    dx2 = round(x2_val**3 * SCALE_GALVO*3, 5)
+    dy2 = round(-1*y2_val**3 * SCALE_GALVO, 5)
+
+    if dx2 != 0 or dy2 != 0:
+        oldx = state.settings.get("galvo_x_position", 0.0)
+        oldy = state.settings.get("galvo_y_position", 0.0)
+        xnew = oldx + dx2
+        ynew = oldy + dy2
+        if xnew > .8:
+            xnew = .8
+        if xnew < -.8:  
+            xnew = -.8
+        if ynew > .8:
+            ynew = .8
+        if ynew < -.8:
+            ynew = -.8
+        state.settings["galvo_x_position"] = xnew
+        state.settings["galvo_y_position"] = ynew
+        galvo.move(xnew, ynew)
+        print(f"Galvo moved to ({xnew}, {ynew})")
+        time.sleep(0.01)  # allow galvo to settle
         return  # skip Z when XY are moving
 
     # Z axis (triggers)
@@ -54,11 +83,13 @@ class MotorWorker(QObject):
     """
     error = pyqtSignal(str)
 
-    def __init__(self, instrument_manager):
+    def __init__(self, instrument_manager, state):
         super().__init__()
         self.IM = instrument_manager
         self.btt = self.IM.get("BTT")
         self.shutter = self.IM.get("Shutter")
+        self.galvo = self.IM.get("Galvo")
+        self.state = state
         self._running = False
 
     def start(self):
@@ -77,14 +108,17 @@ class MotorWorker(QObject):
 
         self._running = True
         while self._running:
-            move_big_motors_from_controller(self.btt, self.joystick)
+            move_big_motors_from_controller(self.btt, self.galvo, self.joystick, self.state)
             time.sleep(0.001)  # adjust for responsiveness
+
+        pygame.joystick.quit()
+        pygame.quit()
+        self.btt.clear()
 
     def stop(self):
         self._running = False
-        self.btt.clear()
-        pygame.joystick.quit()
-        pygame.quit()
+        
+        
 
 
 class DraggableVideoLabel(QLabel):
@@ -143,21 +177,18 @@ class DraggableVideoLabel(QLabel):
 
 
 class WebcamTab(QWidget):
-    def __init__(self, instrument_manager):
+    def __init__(self, instrument_manager, state):
         super().__init__()
         self.IM = instrument_manager
         self.shutter = self.IM.get("Shutter")
         self.stage = self.IM.get("ESP")
+        self.galvo = self.IM.get("Galvo")
+        self.state = state
         self.cap      = None
         self.timer    = QTimer()
         self.timer.timeout.connect(self._update_frame)
 
-        # prepare motor-thread but don't start
-        self.motor_thread = QThread(self)
-        self.motor_worker = MotorWorker(self.IM)
-        self.motor_worker.moveToThread(self.motor_thread)
-        self.motor_worker.error.connect(self._on_motor_error)
-        self.motor_thread.started.connect(self.motor_worker.start)
+
 
         # — UI —
         layout = QHBoxLayout(self)
@@ -185,6 +216,24 @@ class WebcamTab(QWidget):
         ctrl.addWidget(self.brightness_slider)
         ctrl.addStretch()
         
+        galvo_row = QHBoxLayout()
+        galvo_row.addWidget(QLabel("Galvo X (V):"))
+        self.galvo_x_edit = QLineEdit("0.0")
+        self.galvo_x_edit.setValidator(QDoubleValidator(-.1, .1, 4))
+        galvo_row.addWidget(self.galvo_x_edit)
+
+        galvo_row.addWidget(QLabel("Galvo Y (V):"))
+        self.galvo_y_edit = QLineEdit("0.0")
+        self.galvo_y_edit.setValidator(QDoubleValidator(-.1, .1, 4))
+        galvo_row.addWidget(self.galvo_y_edit)
+
+        self.galvo_go_btn = QPushButton("Go")
+        self.galvo_go_btn.clicked.connect(self._on_galvo_go)
+        galvo_row.addWidget(self.galvo_go_btn)
+
+        ctrl.addLayout(galvo_row)
+        # --------------------------------------------------------------------
+
         # --- Stage Controls -------------------------------------------------
         pos_row = QHBoxLayout()
         pos_row.addWidget(QLabel("Stage Pos (mm):"))
@@ -249,6 +298,20 @@ class WebcamTab(QWidget):
     def _on_stage_speed_set(self):
         speed = float(self.stage_speed_edit.text())
         self.stage.set_speed(1, speed)
+
+    def _on_galvo_go(self):
+        try:
+            x = float(self.galvo_x_edit.text())
+            y = float(self.galvo_y_edit.text())
+        except ValueError:
+            QMessageBox.warning(self, "Input Error", "Please enter valid numbers for X and Y.")
+            return
+
+        try:
+            # Replace move_xy with whatever your galvo API uses:
+            self.galvo.move(x, y)
+        except Exception as e:
+            QMessageBox.warning(self, "Galvo Error", f"Couldn’t move galvo:\n{e}")
         
     def start_all(self):
         # 1) camera
@@ -256,7 +319,12 @@ class WebcamTab(QWidget):
             self.cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
         self.timer.start(30)  # ~33 Hz
 
-        # 2) motors
+        # 2) motors — make a brand-new thread+worker every time
+        self.motor_thread = QThread(self)
+        self.motor_worker = MotorWorker(self.IM, self.state)
+        self.motor_worker.moveToThread(self.motor_thread)
+        self.motor_worker.error.connect(self._on_motor_error)
+        self.motor_thread.started.connect(self.motor_worker.start)
         self.motor_thread.start()
 
         # toggle buttons
@@ -274,6 +342,8 @@ class WebcamTab(QWidget):
         self.motor_worker.stop()
         self.motor_thread.quit()
         self.motor_thread.wait()
+        self.motor_worker.deleteLater()
+        self.motor_thread.deleteLater()
 
         # toggle buttons
         self.start_btn.setEnabled(True)

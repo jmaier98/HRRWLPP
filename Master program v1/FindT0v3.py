@@ -152,14 +152,17 @@ class MainWindow(QtWidgets.QMainWindow):
 
             # live update average on upper plot
             runs = self.scan_count + 1
-            avg_y = [s / runs for s in self.sum_y]
+            avg_y = [
+                s / (runs if i < len(self.current_y) else runs - 1)
+                for i, s in enumerate(self.sum_y)
+            ]
             self.avg_line.set_data(self.xdata, avg_y)
 
             # live update current scan on lower plot
             if self.scan_lines:
                 current_line = self.scan_lines[-1]
-                x_vals = self.xdata[:len(self.current_y)]
-                current_line.set_data(x_vals, self.current_y)
+                n = min(len(self.xdata), len(self.current_y))
+                current_line.set_data(self.xdata[:n], self.current_y[:n])
 
             # redraw both
             self.ax1.relim(); self.ax1.autoscale_view()

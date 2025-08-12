@@ -6,8 +6,16 @@ from PyQt6.QtWidgets import (
     QLabel, QLineEdit, QPushButton,
     QGridLayout, QHBoxLayout, QVBoxLayout, QGroupBox, QFormLayout
 )
-import time
+from PyQt6.QtCore import QThread, pyqtSignal
+from time import sleep
+from power_tuners import ProbeTuner, PumpTuner
 DEFAULT_FEEDRATE = 1000
+
+
+
+
+
+
 class DynamicControlsTab(QWidget):
     def __init__(self, instrument_manager, state, parent=None):
         super().__init__(parent)
@@ -19,6 +27,7 @@ class DynamicControlsTab(QWidget):
             self.btt = self.IM.get("BTT")
         except KeyError:
             raise RuntimeError("BTT controller not found in InstrumentManager")
+        self._tuner_thread = None
         self.entry_labels = [
             'pump polarizer',
             'probe polarizer',
@@ -154,69 +163,69 @@ class DynamicControlsTab(QWidget):
             self.btt.rot_3(value, DEFAULT_FEEDRATE)
         if label == 'probe half waveplate':
             self.btt.rot_4(value, DEFAULT_FEEDRATE)
-        '''if label == 'pump power':
-            target = value
-            pump_wp = self.state.settings["pump_waveplate_angle"]
-            self.shutter.openPump()
-            self.shutter.closeProbe()
-            self.btt.powermeter()
-            initial_power = self.PM.read_power()
-            dTheta = 0
-            theta_step = 0
-            diff = abs(target - initial_power)
-            if diff > 3:
-                self.btt.rot_3(pump_wp + 2, DEFAULT_FEEDRATE)
-                diff2 = abs(target - self.PM.read_power())
-                if diff2 < diff:
-                    print("Increasing waveplate angle")
-                    theta_step = 1
-                else:
-                    print("Decreasing waveplate angle")
-                    theta_step = -1
-            while abs(target - self.PM.read_power()) > 3 and abs(dTheta) < 180:
-                self.btt.rot_3(pump_wp + theta_step, DEFAULT_FEEDRATE)
-                time.sleep(0.1)
-                dTheta += theta_step
-                print(f"Adjusting waveplate by {dTheta}°")
-            if dTheta >= 180:
-                print("Reached maximum waveplate angle, stopping adjustment.")'''
         if label == 'probe power':
-            target = value
-            probe_wp = self.state.settings["probe_waveplate_angle"]
-            self.shutter.closePump()
-            self.shutter.openProbe()
-            self.btt.powermeter()
-            time.sleep(2)
-            initial_power = self.PM.read_power()
-            self.state.settings["probe_power"] = initial_power
-            self.update_state_display()
-            theta_step = 0
-            diff = abs(target - initial_power)
-            if diff > 1:
-                dTheta = 2
-                self.btt.rot_4(probe_wp + 2, DEFAULT_FEEDRATE)
-                time.sleep(0.05)
-                reading = self.PM.read_power()
-                self.state.settings["probe_power"] = reading
-                self.update_state_display()
-                diff2 = abs(target - reading)
-                if diff2 < diff:
-                    print("Increasing waveplate angle")
-                    theta_step = .5
-                else:
-                    print("Decreasing waveplate angle")
-                    theta_step = -.5
-            while abs(target - reading) > 1 and abs(dTheta) < 180:
-                dTheta += theta_step
-                self.btt.rot_4(probe_wp + dTheta, DEFAULT_FEEDRATE)
-                time.sleep(0.1)
-                reading = self.PM.read_power()
-                self.state.settings["probe_power"] = reading
-                self.update_state_display()
-                print("moved")
-            if dTheta >= 180:
-                print("Reached maximum waveplate angle, stopping adjustment.")
-            self.btt.clear()
+            tuner = ProbeTuner(
+                target       = value,
+                pm           = self.PM,
+                btt          = self.btt,
+                shutter      = self.shutter,
+                initial_wp   = self.state.settings["probe_waveplate_angle"],
+            )
+
+            # 1) If there’s already a tuner running, stop it cleanly:
+            if self._tuner_thread and self._tuner_thread.isRunning():
+                self._tuner_thread.quit()
+                self._tuner_thread.wait()
+
+            # 2) Keep a reference so it isn't GC’d:
+            self._tuner_thread = tuner
+
+            # 3) Connect signals
+            tuner.reading_ready.connect(self._on_probe_update)
+
+            # once the thread really finishes, delete the object and clear your ref:
+            tuner.finished.connect(tuner.deleteLater)
+            tuner.finished.connect(lambda: setattr(self, '_tuner_thread', None))
+
+            # 4) Start it
+            tuner.start()
+        if label == 'pump power':
+            tuner = PumpTuner(
+                target       = value,
+                pm           = self.PM,
+                btt          = self.btt,
+                shutter      = self.shutter,
+                initial_wp   = self.state.settings["pump_waveplate_angle"],
+            )
+
+            # 1) If there’s already a tuner running, stop it cleanly:
+            if self._tuner_thread and self._tuner_thread.isRunning():
+                self._tuner_thread.quit()
+                self._tuner_thread.wait()
+
+            # 2) Keep a reference so it isn't GC’d:
+            self._tuner_thread = tuner
+
+            # 3) Connect signals
+            tuner.reading_ready.connect(self._on_pump_update)
+
+            # once the thread really finishes, delete the object and clear your ref:
+            tuner.finished.connect(tuner.deleteLater)
+            tuner.finished.connect(lambda: setattr(self, '_tuner_thread', None))
+
+            # 4) Start it
+            tuner.start()
+
+    def _on_probe_update(self, angle, power):
+        # update both waveplate‑angle & power in your state
+        self.state.settings["probe_waveplate_angle"] = angle
+        self.state.settings["probe_power"]            = power
+        self.update_state_display() 
+    def _on_pump_update(self, angle, power):
+        # update both waveplate‑angle & power in your state
+        self.state.settings["pump_waveplate_angle"] = angle
+        self.state.settings["pump_power"]            = power
+        self.update_state_display() 
             
 
     def on_plain_command(self, jdx):
