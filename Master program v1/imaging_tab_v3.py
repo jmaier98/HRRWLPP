@@ -110,7 +110,7 @@ class ImagingTab(QWidget):
         self.ny_edit = self._make_line("Y points:",   ctrl, QDoubleValidator(1, 10000, 0))
 
         # default values for convenience
-        self.x0_edit.setText("-.2"); self.x1_edit.setText("0.2"); self.nx_edit.setText("50")
+        self.x0_edit.setText("-.05"); self.x1_edit.setText(".05"); self.nx_edit.setText("50")
         self.y0_edit.setText("-.05"); self.y1_edit.setText(".05"); self.ny_edit.setText("50")
 
         # start / stop

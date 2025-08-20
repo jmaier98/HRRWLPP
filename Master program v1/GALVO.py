@@ -8,31 +8,27 @@ PIN_MASK = 0x1F  # D0–D3
 def moveXY(x, y):
     x = min(x, 1)
     x = max(x, -1)
-    x = int(x * 32767) + 32768
+    x = int(x * 131071) + 131072
     y = min(y, 1)
     y = max(y, -1)
-    y = int(y * 32767) + 32768
-    xbits = format(x, '016b')
-    ybits = format(y, '016b')
+    y = int(y * 131071) + 131072
+    xbits = format(x, '018b')
+    ybits = format(y, '018b')
     pin_sequence = []
-    pin_sequence.append((0 << 0) | (0 << 1) | (1 << 2) | (1 << 3) | (1 << 4))
-    pin_sequence.append((0 << 0) | (0 << 1) | (1 << 2) | (0 << 3) | (1 << 4))
-    pin_sequence.append((0 << 0) | (0 << 1) | (0 << 2) | (1 << 3) | (1 << 4))
-    pin_sequence.append((0 << 0) | (0 << 1) | (0 << 2) | (0 << 3) | (1 << 4))
-    pin_sequence.append((1 << 0) | (1 << 1) | (0 << 2) | (1 << 3) | (1 << 4))
-    pin_sequence.append((1 << 0) | (1 << 1) | (0 << 2) | (0 << 3) | (1 << 4))
-    for i in range(16):
+    pin_sequence.append((1 << 0) | (1 << 1) | (1 << 2) | (1 << 3) | (1 << 4))
+    pin_sequence.append((1 << 0) | (1 << 1) | (1 << 2) | (0 << 3) | (1 << 4))
+    for i in range(18):
         xb = int(xbits[i])
         yb = int(ybits[i])
         pin_sequence.append((yb << 0) | (xb << 1) | (0 << 2) | (1 << 3) | (1 << 4))
         pin_sequence.append((yb << 0) | (xb << 1) | (0 << 2) | (0 << 3) | (1 << 4))
-    pin_sequence.append((0 << 0) | (0 << 1) | (0 << 2) | (1 << 3) | (1 << 4))
+    pin_sequence.append((0 << 0) | (0 << 1) | (0 << 2) | (1 << 3) | (0 << 4))
     pin_sequence.append((0 << 0) | (0 << 1) | (0 << 2) | (0 << 3) | (0 << 4))
     
     return bytes(pin_sequence)
 
 class GALVO:
-    def __init__(self, device_url='ftdi:///1', frequency=100000):
+    def __init__(self, device_url='ftdi:///1', frequency=200000):
         self.gpio = None
         self.ftdi = None
         self.device_url = device_url
@@ -80,7 +76,7 @@ class GALVO:
     def send_frame_atomic(self, frame_data):
         """Send exactly 40 bytes atomically using flush to force immediate transfer"""
         if len(frame_data) != 40:
-            raise ValueError(f"Frame must be exactly 40 bytes, got {len(frame_data)}")
+            raise ValueError(f"Frame must be exactly 44 bytes, got {len(frame_data)}")
         
         # Method 1: Use exchange with immediate flush
         try:
@@ -119,7 +115,7 @@ class GALVO:
     def send_frame_with_verification(self, frame_data):
         """Send frame and verify it was sent atomically"""
         if len(frame_data) != 40:
-            raise ValueError(f"Frame must be exactly 40 bytes, got {len(frame_data)}")
+            raise ValueError(f"Frame must be exactly 44 bytes, got {len(frame_data)}")
         
         # Clear any pending data first
         try:

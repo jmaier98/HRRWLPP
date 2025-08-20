@@ -40,7 +40,7 @@ def move_big_motors_from_controller(BTT, galvo, joystick, state):
     if abs(x2_val) < DEADZONE: x2_val = 0
     if abs(y2_val) < DEADZONE: y2_val = 0
 
-    dx2 = round(x2_val**3 * SCALE_GALVO*3, 5)
+    dx2 = round(x2_val**3 * SCALE_GALVO, 5)
     dy2 = round(-1*y2_val**3 * SCALE_GALVO, 5)
 
     if dx2 != 0 or dy2 != 0:

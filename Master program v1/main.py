@@ -11,6 +11,7 @@ from instrument_manager import InstrumentManager
 from microscope_state import MicroscopeState
 from imaging_tab_v3 import ImagingTab
 from averaged_scan_tab import AveragedScanTab
+from photocurrent_scan_tab import PhotocurrentScanTab
 
 class MainWindow(QMainWindow):
     def __init__(self,instrument_manager, state):
@@ -38,10 +39,12 @@ class MainWindow(QMainWindow):
         # Tab 4: webcam
         tabs.addTab(WebcamTab(instrument_manager, state), "Webcam")
 
-        # Tab 4: picoscope
+        # Tab 5: picoscope
         tabs.addTab(ImagingTab(instrument_manager, state), "Imaging")
 
         tabs.addTab(AveragedScanTab(instrument_manager, state), "Averaged Scan")
+
+        tabs.addTab(PhotocurrentScanTab(instrument_manager, state), "Photocurrent Scan")
 
     def closeEvent(self, event):
         # save state when the window is closing

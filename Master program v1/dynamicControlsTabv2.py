@@ -156,7 +156,7 @@ class DynamicControlsTab(QWidget):
         value = float(self.entries[idx].text().strip())
         print(f"[Entry {idx}] {label} → '{value}'")
         if label == 'pump polarizer':
-            self.btt.rot_1(value, DEFAULT_FEEDRATE)
+            self.btt.rot_1(value, 5000)
         if label == 'probe polarizer':
             self.btt.rot_2(value, DEFAULT_FEEDRATE)
         if label == 'pump half waveplate':
