@@ -17,7 +17,7 @@ class _ScanWorker(QThread):
     progress = pyqtSignal(int, int, float)    # ix, iy, value
     finished = pyqtSignal(bool, str)          # user_abort, message
 
-    def __init__(self, galvo, lockin, xs, ys, wait_s: float, serpentine: bool = True):
+    def __init__(self, galvo, lockin, xs, ys, wait_s: float, serpentine: bool = False):
         super().__init__()
         self._galvo       = galvo
         self._lockin      = lockin
@@ -109,13 +109,13 @@ class PhotocurrentScanTab(QWidget):
         dv = QDoubleValidator(-1e9, 1e9, 6, self)
         iv = QIntValidator(2, 5000, self)  # at least 2 points per axis
 
-        self.x_start  = QLineEdit("-0.05");  self.x_start.setValidator(dv)
-        self.x_end    = QLineEdit("0.05");   self.x_end.setValidator(dv)
-        self.x_steps  = QLineEdit("50");   self.x_steps.setValidator(iv)
+        self.x_start  = QLineEdit("-0.01");  self.x_start.setValidator(dv)
+        self.x_end    = QLineEdit("0.01");   self.x_end.setValidator(dv)
+        self.x_steps  = QLineEdit("30");   self.x_steps.setValidator(iv)
 
-        self.y_start  = QLineEdit("-0.05");  self.y_start.setValidator(dv)
-        self.y_end    = QLineEdit("0.05");   self.y_end.setValidator(dv)
-        self.y_steps  = QLineEdit("50");   self.y_steps.setValidator(iv)
+        self.y_start  = QLineEdit("-0.01");  self.y_start.setValidator(dv)
+        self.y_end    = QLineEdit("0.01");   self.y_end.setValidator(dv)
+        self.y_steps  = QLineEdit("30");   self.y_steps.setValidator(iv)
 
         self.wait_ms  = QLineEdit("10");    self.wait_ms.setValidator(QIntValidator(0, 100000, self))
 
@@ -132,9 +132,12 @@ class PhotocurrentScanTab(QWidget):
         form.addRow("Y end:",   self.y_end)
         form.addRow("Y steps:", self.y_steps)
         form.addRow("Wait (ms):", self.wait_ms)
-        form.addRow("Folder:", self.folder)
-        form.addRow("Filename (no ext):", self.filename)
         form_box.addLayout(form)
+        form_box.addWidget(QLabel("Folder:"))
+        form_box.addWidget(self.folder)
+
+        form_box.addWidget(QLabel("Filename (no ext):"))
+        form_box.addWidget(self.filename)
 
         # Buttons row
         btns = QGridLayout()
@@ -241,11 +244,11 @@ class PhotocurrentScanTab(QWidget):
             )
 
         if self._cbar is None:
-            self._cbar = self.fig.colorbar(self._img, cax=self._cax, label="Lock-in X (V)")
+            self._cbar = self.fig.colorbar(self._img, cax=self._cax, label="Lock-in X (Amps)")
         else:
             # update the existing colorbar to use the new image
             self._cbar.update_normal(self._img)
-            self._cbar.set_label("Lock-in X (V)")
+            self._cbar.set_label("Lock-in X (Amps)")
         self.canvas.draw_idle()
 
         # buttons / status
@@ -254,7 +257,7 @@ class PhotocurrentScanTab(QWidget):
         self.status_lbl.setText("Scanning…")
 
         # start worker
-        self.worker = _ScanWorker(self.galvo, self.lockin, self._xs, self._ys, wait_s, serpentine=True)
+        self.worker = _ScanWorker(self.galvo, self.lockin, self._xs, self._ys, wait_s, serpentine=False)
         self.worker.progress.connect(self._on_progress, Qt.ConnectionType.QueuedConnection)
         self.worker.finished.connect(self._on_finished, Qt.ConnectionType.QueuedConnection)
         self.worker.start()
@@ -266,13 +269,21 @@ class PhotocurrentScanTab(QWidget):
 
     def _on_progress(self, ix: int, iy: int, val: float):
         # Update data and image
-        if self._data is None: 
+        if self._data is None:
             return
         self._data[iy, ix] = val
+
         if self._img is not None:
             self._img.set_data(self._data)
-            # optional autoscale as values arrive:
-            self._img.set_clim(np.nanmin(self._data), np.nanmax(self._data))
+
+            # Only autoscale if some real values exist (not all NaN)
+            if np.isfinite(self._data).any():
+                vmin, vmax = np.nanmin(self._data), np.nanmax(self._data)
+                self._img.set_clim(vmin, vmax)
+
+                if self._cbar is not None:
+                    self._cbar.update_normal(self._img)
+
         self.canvas.draw_idle()
 
     def _on_finished(self, user_abort: bool, message: str):
@@ -285,37 +296,78 @@ class PhotocurrentScanTab(QWidget):
         if self._data is None or self._xs is None or self._ys is None:
             QMessageBox.information(self, "Nothing to save", "Run a scan first.")
             return
+
         folder = self.folder.text().strip()
-        fname  = self.filename.text().strip() or "scan"
+        fname  = (self.filename.text().strip() or "scan")
+
         try:
             os.makedirs(folder, exist_ok=True)
         except Exception as e:
             QMessageBox.critical(self, "Folder error", f"Could not create folder:\n{e}")
             return
 
-        # Save CSV: first row is x coordinates, first column is y
-        csv_path = os.path.join(folder, f"{fname}.csv")
-        try:
-            # Build a table with header row/col
-            header = np.concatenate(([np.nan], self._xs))
-            table  = np.column_stack((self._ys.reshape(-1, 1), self._data))
-            out    = np.vstack((header, table))
-            np.savetxt(csv_path, out, delimiter=",", fmt="%.10g")
-        except Exception as e:
-            QMessageBox.critical(self, "Save error", f"Failed to save CSV:\n{e}")
-            return
-
-        # Save a PNG of the figure as well (nice to have)
+        # --- Save figure screenshot ---
         png_path = os.path.join(folder, f"{fname}.png")
         try:
-            self.fig.savefig(png_path, dpi=200)
+            # Use tight layout for a clean export with colorbar
+            self.fig.savefig(png_path, dpi=200, bbox_inches="tight")
         except Exception as e:
-            QMessageBox.warning(self, "Image save error", f"CSV saved, but PNG failed:\n{e}")
-            QMessageBox.information(self, "Saved", f"Saved: {csv_path}")
+            QMessageBox.warning(self, "Image save error", f"PNG failed:\n{e}")
+
+        # --- Save data as TXT with header (scan params) ---
+        txt_path = os.path.join(folder, f"{fname}.txt")
+        try:
+            # Build the same “axes in header row/col” table as before
+            '''header_row = np.concatenate(([np.nan], self._xs))
+            table      = np.column_stack((self._ys.reshape(-1, 1), self._data))
+            out        = np.vstack((header_row, self._data))'''
+
+            # Rich header describing parameters & stats
+            hdr = self._build_header()
+
+            # np.savetxt adds a leading comment by default ('# '), so set comments=''
+            np.savetxt(txt_path, self._data, delimiter="\t", fmt="%.10g", header=hdr, comments="")
+        except Exception as e:
+            QMessageBox.critical(self, "Save error", f"Failed to save TXT:\n{e}")
+            # If PNG succeeded, still report that
+            if os.path.exists(png_path):
+                QMessageBox.information(self, "Partial save", f"Saved plot only:\n{png_path}")
             return
 
-        QMessageBox.information(self, "Saved", f"Saved:\n{csv_path}\n{png_path}")
 
+
+    def _build_header(self) -> str:
+        """Build a human-readable header summarizing the scan and data."""
+        if self._xs is None or self._ys is None or self._data is None:
+            return "Photocurrent scan (no data)\n"
+
+        ny, nx = self._data.shape
+        vmin = np.nanmin(self._data) if np.isfinite(self._data).any() else np.nan
+        vmax = np.nanmax(self._data) if np.isfinite(self._data).any() else np.nan
+        lines = [
+            "Photocurrent scan",
+            f"Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}",
+            "",
+            "Parameters:",
+            f"  X start: {self.x_start.text()}",
+            f"  X end:   {self.x_end.text()}",
+            f"  X steps: {self.x_steps.text()} (nx={nx})",
+            f"  Y start: {self.y_start.text()}",
+            f"  Y end:   {self.y_end.text()}",
+            f"  Y steps: {self.y_steps.text()} (ny={ny})",
+            f"  Wait (ms): {self.wait_ms.text()}",
+            "",
+            "Axes (for the table below):",
+            "  First row:   NaN, then X coordinates",
+            "  First col.:  Y coordinates",
+            "",
+            "Data stats (lock-in X, Amps):",
+            f"  min: {vmin}",
+            f"  max: {vmax}",
+            "",
+            "Table begins below this header."
+        ]
+        return "\n".join(lines)
     # Ensure the worker is stopped on close
     def closeEvent(self, event):
         if self.worker and self.worker.isRunning():

@@ -2,12 +2,12 @@
   "pm_reference": "USB0::4883::32883::250604411::0::INSTR",
   "probe_power": 10.079051000000002,
   "pump_power": 49.574104,
-  "pump_polarizer_angle": 180.0,
+  "pump_polarizer_angle": 0.0,
   "probe_polarizer_angle": 180.0,
   "pump_waveplate_angle": 353.50000000000034,
   "probe_waveplate_angle": -82.70033482142834,
-  "galvo_x_position": 0.020569999999997004,
-  "galvo_y_position": 0.006589999999993461,
+  "galvo_x_position": -0.040560000000003094,
+  "galvo_y_position": 0.03245999999999355,
   "pump_shutter_open": false,
   "probe_shutter_open": false
 }
