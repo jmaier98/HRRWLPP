@@ -6,8 +6,8 @@
   "probe_polarizer_angle": 180.0,
   "pump_waveplate_angle": 353.50000000000034,
   "probe_waveplate_angle": -82.70033482142834,
-  "galvo_x_position": -0.040560000000003094,
-  "galvo_y_position": 0.03245999999999355,
+  "galvo_x_position": 0.04880999999999703,
+  "galvo_y_position": -0.046180000000006556,
   "pump_shutter_open": false,
   "probe_shutter_open": false
 }

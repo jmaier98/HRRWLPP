@@ -23,6 +23,7 @@ class DynamicControlsTab(QWidget):
         self.state = state
         self.PM = self.IM.get("PM")
         self.shutter = self.IM.get("Shutter")
+        self.Keithley2400 = self.IM.get("Keithley2400")
         try:
             self.btt = self.IM.get("BTT")
         except KeyError:
@@ -51,7 +52,8 @@ class DynamicControlsTab(QWidget):
             'move cryo z',
             'move objective stage',
             'rail 1',
-            'rail 2'
+            'rail 2',
+            'ramp gate voltage (v)'
         ]
         self.button_labels = [
             'open pump shutter',
@@ -64,7 +66,9 @@ class DynamicControlsTab(QWidget):
             'home pump waveplate',
             'home probe waveplate',
             'home detector polarizer',
-            'home beamsplitter waveplate'
+            'home beamsplitter waveplate',
+            'enable keithley output',
+            'disable keithley output'
         ]
         self.entries = []
         self.go_buttons = []
@@ -215,6 +219,8 @@ class DynamicControlsTab(QWidget):
 
             # 4) Start it
             tuner.start()
+        if label == 'ramp gate voltage (v)':
+            self.Keithley2400.ramp_voltage(value, verbose = True)  # uses driver defaults for step/dwell
 
     def _on_probe_update(self, angle, power):
         # update both waveplate‑angle & power in your state
@@ -239,4 +245,8 @@ class DynamicControlsTab(QWidget):
             self.btt.home_rot3()
         if cmd == 'home rails':
             self.btt.homeRails()
+        if cmd == 'enable keithley output':
+            self.Keithley2400.output_on()
+        if cmd == 'disable keithley output':
+            self.Keithley2400.output_off()
             

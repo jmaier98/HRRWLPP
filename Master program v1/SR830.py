@@ -1,6 +1,5 @@
 import pyvisa
-import threading
-import time
+
 
 class SR830:
     """

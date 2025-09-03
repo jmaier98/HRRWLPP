@@ -280,11 +280,11 @@ class PumpProbeOverlapTab(QWidget):
         self.phase = phase
         # shutter states
         if phase == self.PHASE_PUMP:
-            self.shutter.closeProbe(); time.sleep(0.05)
-            self.shutter.openPump();  time.sleep(0.10)
+            self.shutter.closeProbe(); time.sleep(1)
+            self.shutter.openPump();  time.sleep(0.5)
         elif phase == self.PHASE_PROBE:
-            self.shutter.closePump();  time.sleep(0.05)
-            self.shutter.openProbe();  time.sleep(0.10)
+            self.shutter.closePump();  time.sleep(1)
+            self.shutter.openProbe();  time.sleep(0.5)
 
         # clear DAQ buffers
         self.adc_values.clear()
@@ -413,13 +413,19 @@ class PumpProbeOverlapTab(QWidget):
 
     # ---------------------------- Rendering
     def _clear_images(self):
+        # 1) Remove existing colorbars first (before touching the image axes)
+        self._remove_colorbar(self.cbar_pump);  self.cbar_pump  = None
+        self._remove_colorbar(self.cbar_probe); self.cbar_probe = None
+
+        # 2) Now clear the axes
         self.ax_pump.clear();  self.ax_pump.set_title("Pump image")
         self.ax_probe.clear(); self.ax_probe.set_title("Probe image")
-        self.im_pump = None; self.im_probe = None
-        if self.cbar_pump:  self.cbar_pump.remove();  self.cbar_pump = None
-        if self.cbar_probe: self.cbar_probe.remove(); self.cbar_probe = None
+        self.im_pump  = None
+        self.im_probe = None
+
+        # 3) Recreate crosshair artists on the fresh axes
         self._create_crosshair_artists()
-        self.canvas.draw()
+        self.canvas.draw_idle()
 
     def _render_images(self):
         if self.pump_image is None or self.probe_image is None:
@@ -446,6 +452,9 @@ class PumpProbeOverlapTab(QWidget):
 
         # colorbars UNDER each image
         # pump
+        self._remove_colorbar(self.cbar_pump);  self.cbar_pump  = None
+        self._remove_colorbar(self.cbar_probe); self.cbar_probe = None
+
         if self.im_pump is not None:
             div1 = make_axes_locatable(self.ax_pump)
             cax1 = div1.append_axes("bottom", size="5%", pad=0.35)
@@ -472,6 +481,19 @@ class PumpProbeOverlapTab(QWidget):
 
     def _update_crosshair_label(self):
         self.crosshair_lbl.setText(f"Crosshair (V): X={self.crosshair_x:.3f}, Y={self.crosshair_y:.3f}")
+
+    def _remove_colorbar(self, cbar):
+        """Safely remove a Matplotlib Colorbar (and its Axes) if it exists."""
+        if cbar is None:
+            return
+        try:
+            cax = cbar.ax
+            cbar.remove()  # removes the artists and disconnects from figure
+            # In some mpl versions, the cax can linger; ensure it’s gone:
+            if cax in self.fig.axes:
+                self.fig.delaxes(cax)
+        except Exception as e:
+            print("Colorbar remove warning:", e)
 
     # ---------------------------- Mouse interaction (drag crosshair without moving galvo)
     def _in_axes(self, event, ax):

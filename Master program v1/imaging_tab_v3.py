@@ -207,7 +207,7 @@ class ImagingTab(QWidget):
         x_vals = np.linspace(x0, x1, nx, dtype=np.float32)
         y_vals = np.linspace(y0, y1, ny, dtype=np.float32)
 
-        self.galvo_worker = GalvoWorker(self.galvo, x_vals, y_vals, dwell=0.0005)
+        self.galvo_worker = GalvoWorker(self.galvo, x_vals, y_vals, dwell=0.001)
         self.galvo_worker.finished.connect(self._on_galvo_done)
 
         

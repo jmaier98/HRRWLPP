@@ -7,6 +7,7 @@ import SHUTTER
 import PM
 import GALVO
 import Picoscope
+import Keithley2400
 
 class InstrumentManager:
     def __init__(self, state):
@@ -22,6 +23,7 @@ class InstrumentManager:
         self._instruments['PM'] = PM.PowerMeter(self.state)
         self._instruments['Galvo'] = GALVO.GALVO()
         self._instruments['Picoscope'] = Picoscope.Picoscope()
+        self._instruments['Keithley2400'] = Keithley2400.Keithley2400()
         # …etc.
 
     def get(self, name):

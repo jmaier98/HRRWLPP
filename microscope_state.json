@@ -1,0 +1,13 @@
+{
+  "pm_reference": 0.0,
+  "probe_power": 0.0,
+  "pump_power": 0.0,
+  "pump_polarizer_angle": 0.0,
+  "probe_polarizer_angle": 0.0,
+  "pump_waveplate_angle": 0.0,
+  "probe_waveplate_angle": 0.0,
+  "galvo_x_position": 0.009690000000000032,
+  "galvo_y_position": 0.005819999999999956,
+  "pump_shutter_open": false,
+  "probe_shutter_open": false
+}

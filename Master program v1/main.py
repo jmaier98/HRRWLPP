@@ -13,6 +13,7 @@ from imaging_tab_v3 import ImagingTab
 from averaged_scan_tab import AveragedScanTab
 from photocurrent_scan_tab import PhotocurrentScanTab
 from PumpProbeOverlapTab import PumpProbeOverlapTab
+from iv_curve_tab import IVCurveTab
 
 class MainWindow(QMainWindow):
     def __init__(self,instrument_manager, state):
@@ -48,6 +49,8 @@ class MainWindow(QMainWindow):
         tabs.addTab(PhotocurrentScanTab(instrument_manager, state), "Photocurrent Scan")
 
         tabs.addTab(PumpProbeOverlapTab(instrument_manager, state), "Pump-Probe Overlap")
+
+        tabs.addTab(IVCurveTab(instrument_manager, state), "IV Curve")
 
     def closeEvent(self, event):
         # save state when the window is closing
