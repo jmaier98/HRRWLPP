@@ -4,9 +4,9 @@ from math import ceil
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QMainWindow,
     QLabel, QLineEdit, QPushButton,
-    QGridLayout, QHBoxLayout, QVBoxLayout, QGroupBox, QFormLayout
+    QGridLayout, QHBoxLayout, QVBoxLayout, QGroupBox, QFormLayout, QScrollArea
 )
-from PyQt6.QtCore import QThread, pyqtSignal
+from PyQt6.QtCore import QThread, pyqtSignal, Qt
 from time import sleep
 from power_tuners import ProbeTuner, PumpTuner
 DEFAULT_FEEDRATE = 1000
@@ -24,6 +24,7 @@ class DynamicControlsTab(QWidget):
         self.PM = self.IM.get("PM")
         self.shutter = self.IM.get("Shutter")
         self.Keithley2400 = self.IM.get("Keithley2400")
+        self.stage  = self.IM.get("ESP")
         try:
             self.btt = self.IM.get("BTT")
         except KeyError:
@@ -44,6 +45,7 @@ class DynamicControlsTab(QWidget):
             'detector shortpass',
             'detector polarizer',
             'delay stage pos',
+            'delay stage speed',
             'temperature',
             'galvo x position',
             'galvo y position',
@@ -53,7 +55,8 @@ class DynamicControlsTab(QWidget):
             'move objective stage',
             'rail 1',
             'rail 2',
-            'ramp gate voltage (v)'
+            'ramp gate voltage (v)',
+            'set time zero pos'
         ]
         self.button_labels = [
             'open pump shutter',
@@ -116,7 +119,12 @@ class DynamicControlsTab(QWidget):
         self.state_labels = {}
         for key, val in self.state.settings.items():
             name_lbl  = QLabel(f"{key}:")
-            value_lbl = QLabel(str(val))
+            if isinstance(val, float):
+                # format *any* float to two decimal places
+                text = f"{val:.5f}"
+            else:
+                text = str(val)
+            value_lbl = QLabel(text)
             self.state_labels[key] = value_lbl
             self.state_layout.addRow(name_lbl, value_lbl)
 
@@ -137,19 +145,30 @@ class DynamicControlsTab(QWidget):
 
         
 
-        # — Combine both layouts —
-        main_layout = QVBoxLayout(self)
-        main_layout.addLayout(grid)
-        main_layout.addWidget(self.state_group)
-        main_layout.addLayout(button_grid)
-        self.setLayout(main_layout)
+                # --- Scrollable content container ---
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.addLayout(grid)
+        content_layout.addWidget(self.state_group)
+        content_layout.addLayout(button_grid)
+        content_layout.addStretch(1)  # keeps content snug at top
 
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(content)
+        # Optional: control scrollbars
+        # scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.AsNeeded)
+        # scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.AsNeeded)
+
+        outer = QVBoxLayout(self)
+        outer.addWidget(scroll)
+        self.setLayout(outer)
     def update_state_display(self):
         for key, lbl in self.state_labels.items():
             val = self.state.settings.get(key, "")
             if isinstance(val, float):
                 # format *any* float to two decimal places
-                text = f"{val:.2f}"
+                text = f"{val:.5f}"
             else:
                 text = str(val)
             lbl.setText(text)
@@ -221,6 +240,13 @@ class DynamicControlsTab(QWidget):
             tuner.start()
         if label == 'ramp gate voltage (v)':
             self.Keithley2400.ramp_voltage(value, verbose = True)  # uses driver defaults for step/dwell
+        if label == 'delay stage pos':
+            self.stage.move_absolute(1, value)
+        if label == 'delay stage speed':
+            self.stage.set_speed(1, value)
+        if label == 'set time zero pos':
+            self.state.settings["time zero pos"] = value
+        self.update_state_display()
 
     def _on_probe_update(self, angle, power):
         # update both waveplate‑angle & power in your state
@@ -249,4 +275,19 @@ class DynamicControlsTab(QWidget):
             self.Keithley2400.output_on()
         if cmd == 'disable keithley output':
             self.Keithley2400.output_off()
-            
+        if cmd == 'open pump shutter':
+            self.shutter.openPump()
+            self.state.settings["pump_shutter_open"] = True
+            self.update_state_display()
+        if cmd == 'close pump shutter':
+            self.shutter.closePump()
+            self.state.settings["pump_shutter_open"] = False
+            self.update_state_display()
+        if cmd == 'open probe shutter':
+            self.shutter.openProbe()
+            self.state.settings["probe_shutter_open"] = True
+            self.update_state_display()
+        if cmd == 'close probe shutter':
+            self.shutter.closeProbe()
+            self.state.settings["probe_shutter_open"] = False
+            self.update_state_display()

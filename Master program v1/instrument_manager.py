@@ -17,7 +17,7 @@ class InstrumentManager:
     def open_all(self):
         # e.g.:
         self._instruments['BTT'] = BTT.BTT(self.state)
-        self._instruments['ESP'] = ESP300.ESP300Controller("GPIB0::1::INSTR", timeout=2000)
+        self._instruments['ESP'] = ESP300.ESP300Controller(self.state, "GPIB0::1::INSTR", timeout=2000)
         self._instruments['SR830'] = SR830.SR830()
         self._instruments['Shutter'] = SHUTTER.SHUTTER()
         self._instruments['PM'] = PM.PowerMeter(self.state)

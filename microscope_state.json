@@ -6,8 +6,12 @@
   "probe_polarizer_angle": 0.0,
   "pump_waveplate_angle": 0.0,
   "probe_waveplate_angle": 0.0,
-  "galvo_x_position": 0.009690000000000032,
-  "galvo_y_position": 0.005819999999999956,
+  "galvo_x_position": 0.013610000000000086,
+  "galvo_y_position": 0.012350000000000005,
+  "time zero pos": 9.8,
+  "delay_stage_pos": 12.000600000000004,
+  "delay_stage_speed": 10.0,
+  "delay_ps": -14.67140020000002,
   "pump_shutter_open": false,
   "probe_shutter_open": false
 }

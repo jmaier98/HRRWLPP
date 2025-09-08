@@ -50,6 +50,7 @@ class SHUTTER:
 
     def close(self):
         """Close the serial connection."""
+        self.setLED(0)
         self.ser.close()
 
 

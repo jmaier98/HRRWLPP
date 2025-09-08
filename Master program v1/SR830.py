@@ -1,6 +1,7 @@
 import pyvisa
 
-
+ADDRESS_1 = 18
+ADDRESS_2 = 8
 class SR830:
     """
     Driver for the Stanford Research Systems SR830 Lock-in Amplifier via GPIB.
@@ -14,7 +15,8 @@ class SR830:
         :param timeout: VISA timeout in milliseconds
         """
         self._rm = pyvisa.ResourceManager()
-        self._inst = self._rm.open_resource(f'GPIB::{gpib_addr}::INSTR')
+        self._inst1 = self._rm.open_resource(f'GPIB::{ADDRESS_1}::INSTR')
+        self._inst2 = self._rm.open_resource(f'GPIB::{ADDRESS_2}::INSTR')
         print("SR830 online")
 
     def read_x(self):
@@ -23,7 +25,7 @@ class SR830:
         (Assumes that the command "OUTP? 1" returns x.)
         """
         try:
-            return float(self._inst.query("OUTP? 1"))
+            return float(self._inst1.query("OUTP? 1"))
         except Exception as e:
             print(f"Error in readx1: {e}")
             return None
@@ -33,7 +35,7 @@ class SR830:
         (Assumes that the command "OUTP? 1" returns x.)
         """
         try:
-            return float(self._inst.query("OUTP? 2"))
+            return float(self._inst1.query("OUTP? 2"))
         except Exception as e:
             print(f"Error in readx1: {e}")
             return None
@@ -42,13 +44,43 @@ class SR830:
         Fastest read of X and Y: SNAP?1,2 → "xval,yval"
         Returns (X, Y) as floats.
         """
-        resp = self._inst.query("SNAP?1,2")
+        resp = self._inst1.query("SNAP?1,2")
+        x_str, y_str = resp.strip().split(',')
+        return float(x_str), float(y_str)
+    
+    def read_x2(self):
+        """
+        Read the x value from the middle lockin amplifier.
+        (Assumes that the command "OUTP? 1" returns x.)
+        """
+        try:
+            return float(self._inst2.query("OUTP? 1"))
+        except Exception as e:
+            print(f"Error in readx1: {e}")
+            return None
+    def read_y2(self):
+        """
+        Read the x value from the middle lockin amplifier.
+        (Assumes that the command "OUTP? 1" returns x.)
+        """
+        try:
+            return float(self._inst2.query("OUTP? 2"))
+        except Exception as e:
+            print(f"Error in readx1: {e}")
+            return None
+    def read_xy2(self) -> tuple[float, float]:
+        """
+        Fastest read of X and Y: SNAP?1,2 → "xval,yval"
+        Returns (X, Y) as floats.
+        """
+        resp = self._inst2.query("SNAP?1,2")
         x_str, y_str = resp.strip().split(',')
         return float(x_str), float(y_str)
     
     def close(self):
  # restore display updates if needed
-        self._inst.close()
+        self._inst1.close()
+        self._inst2.close()
         self._rm.close()
 
 
