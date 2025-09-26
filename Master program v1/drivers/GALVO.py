@@ -28,7 +28,7 @@ def moveXY(x, y):
     return bytes(pin_sequence)
 
 class GALVO:
-    def __init__(self, device_url='ftdi:///1', frequency=200000):
+    def __init__(self, device_url='ftdi://0x0403:0x6014:02:24/1', frequency=200000):
         self.gpio = None
         self.ftdi = None
         self.device_url = device_url

@@ -66,6 +66,7 @@ class ESP300Controller:
         return (t0-mm)*6.667
     def ps_to_mm(self, ps):
         t0 = self.state.settings["time zero pos"]
+        print(t0, ps)
         return t0 - ps/6.667
     def close(self):
         self.inst.close()

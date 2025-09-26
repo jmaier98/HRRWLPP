@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import QThread, pyqtSignal, Qt
 from time import sleep
-from power_tuners import ProbeTuner, PumpTuner
+from helpers.power_tuners import ProbeTuner, PumpTuner
 DEFAULT_FEEDRATE = 1000
 
 

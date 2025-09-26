@@ -162,6 +162,24 @@ class FourMapScanTab(QWidget):
         controls_col.addWidget(self.folder)
         controls_col.addWidget(QLabel("Filename (no ext):"))
         controls_col.addWidget(self.filename)
+        # --- Crosshair position controls ---
+        controls_col.addWidget(QLabel("Crosshair X:"))
+        self.x_pos = QLineEdit("0.0"); self.x_pos.setValidator(dv)
+        controls_col.addWidget(self.x_pos)
+
+        controls_col.addWidget(QLabel("Crosshair Y:"))
+        self.y_pos = QLineEdit("0.0"); self.y_pos.setValidator(dv)
+        controls_col.addWidget(self.y_pos)
+
+        self.go_btn = QPushButton("Go (Galvo.moveXY)")
+        controls_col.addWidget(self.go_btn)
+        self.go_btn.clicked.connect(lambda: self._on_go())
+
+        # Keep line edits and crosshairs in sync
+        self._suppress_pos_edits = False
+        self.x_pos.editingFinished.connect(self._on_pos_edits_finished)
+        self.y_pos.editingFinished.connect(self._on_pos_edits_finished)
+
 
         btns = QGridLayout()
         self.start_btn  = QPushButton("Start");   self.start_btn.clicked.connect(self._start)
@@ -233,7 +251,20 @@ class FourMapScanTab(QWidget):
         # initial titles
         for i, ax in enumerate(self.axes):
             ax.set_title(f"Map {i+1} — {self.chan_labels[i]}")
+        # --- Crosshair plumbing (shared across all 4 axes) ---
+        self._crosshair_x = 0.0
+        self._crosshair_y = 0.0
+        self._xlines = [None]*4
+        self._ylines = [None]*4
+        self._dragging = False
+        self._drag_ax = None
 
+        self._init_crosshairs()
+
+        # Mouse events for dragging
+        self._cid_press   = self.canvas.mpl_connect("button_press_event",  self._on_canvas_press)
+        self._cid_motion  = self.canvas.mpl_connect("motion_notify_event", self._on_canvas_motion)
+        self._cid_release = self.canvas.mpl_connect("button_release_event",self._on_canvas_release)
         self.canvas.draw_idle()
 
     # -------------
@@ -275,6 +306,8 @@ class FourMapScanTab(QWidget):
         # configure each subplot's image & colorbar
         for i, ax in enumerate(self.axes):
             ax.clear()
+            self._xlines[i] = None
+            self._ylines[i] = None
             ax.set_box_aspect(1)
             ax.set_xlabel("X")
             ax.set_ylabel("Y")
@@ -310,8 +343,18 @@ class FourMapScanTab(QWidget):
             else:
                 self.cbars[i].update_normal(img)
                 self.cbars[i].set_label(self.chan_labels[chan_idx])
+        # re-add red crosshairs on top of the images
+        self._init_crosshairs()
 
+        # center the crosshair within the scan range and sync edits
+        cx = float(self._xs[len(self._xs)//2])
+        cy = float(self._ys[len(self._ys)//2])
+        self._update_crosshairs(cx, cy, update_edits=True, redraw=True)
         self.canvas.draw_idle()
+        # center the crosshair within the scan range
+        cx = float(self._xs[len(self._xs)//2])
+        cy = float(self._ys[len(self._ys)//2])
+        self._update_crosshairs(cx, cy, update_edits=True, redraw=True)
 
         # buttons / status
         self.start_btn.setEnabled(False)
@@ -328,7 +371,108 @@ class FourMapScanTab(QWidget):
         if self.worker and self.worker.isRunning():
             self.worker.stop()
             self.status_lbl.setText("Stopping…")
+    def _move_galvo(self, x: float, y: float):
+            self.galvo.move(float(x), float(y))
+    def _init_crosshairs(self):
+        """(Re)create one vertical + one horizontal red line per axes."""
+        for i, ax in enumerate(self.axes):
+            # If axes were cleared, prior Line2D handles are stale. Reset them.
+            if self._xlines[i] is None or self._xlines[i] not in ax.lines:
+                self._xlines[i] = ax.axvline(
+                    self._crosshair_x, linestyle="--",
+                    color="red", linewidth=0.8, alpha=0.9, zorder=10
+                )
+            if self._ylines[i] is None or self._ylines[i] not in ax.lines:
+                self._ylines[i] = ax.axhline(
+                    self._crosshair_y, linestyle="--",
+                    color="red", linewidth=0.8, alpha=0.9, zorder=10
+                )
+        self.canvas.draw_idle()
 
+    def _update_crosshairs(self, x: float, y: float, update_edits: bool = True, redraw: bool = True):
+        """Move crosshairs in all 4 plots to (x,y) in data coords."""
+        self._crosshair_x = float(x)
+        self._crosshair_y = float(y)
+        for i in range(4):
+            if self._xlines[i] is not None:
+                self._xlines[i].set_xdata([self._crosshair_x, self._crosshair_x])
+            if self._ylines[i] is not None:
+                self._ylines[i].set_ydata([self._crosshair_y, self._crosshair_y])
+        if update_edits:
+            self._set_pos_edits(self._crosshair_x, self._crosshair_y)
+        if redraw:
+            self.canvas.draw_idle()
+
+    def _set_pos_edits(self, x: float, y: float):
+        self._suppress_pos_edits = True
+        try:
+            self.x_pos.setText(f"{x:.10g}")
+            self.y_pos.setText(f"{y:.10g}")
+        finally:
+            self._suppress_pos_edits = False
+
+    def _on_pos_edits_finished(self):
+        if self._suppress_pos_edits:
+            return
+        try:
+            x = float(self.x_pos.text())
+            y = float(self.y_pos.text())
+        except ValueError:
+            return
+        # Don’t command hardware here; just move the crosshairs.
+        # (Pressing Go will call galvo.)
+        self._update_crosshairs(x, y, update_edits=False, redraw=True)
+
+    def _on_canvas_press(self, event):
+        if event.button != 1 or event.inaxes is None:
+            return
+        ax = event.inaxes
+        # If click anywhere inside an axes, start dragging from that point.
+        if event.xdata is None or event.ydata is None:
+            return
+        # Clamp to current axes limits so the crosshair stays visible.
+        x, y = self._clamp_to_axes(ax, event.xdata, event.ydata)
+        self._dragging = True
+        self._drag_ax = ax
+        self._update_crosshairs(x, y, update_edits=True, redraw=True)
+
+    def _on_canvas_motion(self, event):
+        if not self._dragging or self._drag_ax is None:
+            return
+        # Use last active axes for clamping if pointer leaves the axes.
+        ax = self._drag_ax
+        if event.xdata is None or event.ydata is None:
+            return
+        x, y = self._clamp_to_axes(ax, event.xdata, event.ydata)
+        self._update_crosshairs(x, y, update_edits=True, redraw=True)
+
+    def _on_canvas_release(self, event):
+        if event.button != 1:
+            return
+        self._dragging = False
+        self._drag_ax = None
+
+    def _clamp_to_axes(self, ax, x, y):
+        x0, x1 = ax.get_xlim()
+        y0, y1 = ax.get_ylim()
+        xmin, xmax = (min(x0, x1), max(x0, x1))
+        ymin, ymax = (min(y0, y1), max(y0, y1))
+        return (min(max(x, xmin), xmax), min(max(y, ymin), ymax))
+
+    def _on_go(self):
+        try:
+            x = float(self.x_pos.text())
+            y = float(self.y_pos.text())
+        except ValueError:
+            QMessageBox.warning(self, "Input error", "Enter valid X/Y numbers.")
+            return
+        try:
+            self._move_galvo(x, y)
+            # keep crosshairs synced to the commanded position
+            self._update_crosshairs(x, y, update_edits=True, redraw=True)
+            self.status_lbl.setText(f"Moved galvo to ({x:.6g}, {y:.6g}).")
+        except Exception as e:
+            QMessageBox.critical(self, "Galvo error", str(e))
     def _on_progress(self, ix: int, iy: int, l1x: float, l1y: float, l2x: float, l2y: float):
         # update 2D grids
         self._ch_data[0][iy, ix] = l1x

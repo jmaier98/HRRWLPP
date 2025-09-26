@@ -1,13 +1,5 @@
 # instrument_manager.py
-import serial
-import ESP300
-import SR830
-import BTT
-import SHUTTER
-import PM
-import GALVO
-import Picoscope
-import Keithley2400
+from drivers import ESP300, SR830, BTT, SHUTTER, PM, Galvo_D2XX, Picoscope, Keithley2400, SP2500
 
 class InstrumentManager:
     def __init__(self, state):
@@ -21,9 +13,10 @@ class InstrumentManager:
         self._instruments['SR830'] = SR830.SR830()
         self._instruments['Shutter'] = SHUTTER.SHUTTER()
         self._instruments['PM'] = PM.PowerMeter(self.state)
-        self._instruments['Galvo'] = GALVO.GALVO()
+        self._instruments['Galvo'] = Galvo_D2XX.GALVO()
         self._instruments['Picoscope'] = Picoscope.Picoscope()
         self._instruments['Keithley2400'] = Keithley2400.Keithley2400()
+        self._instruments['SP2500'] = SP2500.SP2500()
         # …etc.
 
     def get(self, name):
