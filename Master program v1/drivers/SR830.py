@@ -16,8 +16,9 @@ class SR830:
         """
         self._rm = pyvisa.ResourceManager()
         self._inst1 = self._rm.open_resource(f'GPIB::{ADDRESS_1}::INSTR')
+        print("SR830 onlineA")
         self._inst2 = self._rm.open_resource(f'GPIB::{ADDRESS_2}::INSTR')
-        print("SR830 online")
+        print("SR830 onlineB")
 
     def read_x(self):
         """
@@ -76,6 +77,19 @@ class SR830:
         resp = self._inst2.query("SNAP?1,2")
         x_str, y_str = resp.strip().split(',')
         return float(x_str), float(y_str)
+    def readX_A(self) -> tuple[float, float]:
+        """
+        Return the X-channel output and Aux 1 input from lockin 1.
+        Uses SNAP?1,5 → X (1), Aux In 1 (5)
+        Returns (X, Aux1) as floats.
+        """
+        try:
+            resp = self._inst1.query("SNAP?1,5")
+            x_str, aux1_str = resp.strip().split(',')
+            return float(x_str), float(aux1_str)
+        except Exception as e:
+            print(f"Error in readX_A: {e}")
+            return None, None
     
     def close(self):
  # restore display updates if needed
@@ -95,6 +109,8 @@ if __name__ == "__main__":
     print(f"Single read → Y={y:+.6e}")
     x, y = lockin.read_xy()
     print(f"Single read → X={x:+.6e}, Y={y:+.6e}")
+    x = lockin.read_x2()
+    print(f"Single read → X2={x:+.6e}")
 
 
     lockin.close()

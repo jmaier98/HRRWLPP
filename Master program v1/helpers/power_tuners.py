@@ -50,13 +50,18 @@ class ProbeTuner(QThread):
             self.reading_ready.emit(self.initial_wp + dTheta, reading)
         # 5) fine tuning loop
         dTheta -= 2*theta_step
+        sleep(.5)
         print("fine tuning")
-        while abs(self.target - reading) > self.target*.01 and abs(dTheta) < 180:
-            dTheta += theta_step / 20
+        reading = self.pm.read_power()
+        self.reading_ready.emit(self.initial_wp + dTheta, reading)
+        fsteps = 0
+        while abs(self.target - reading) > self.target*.01 and abs(dTheta) < 180 and fsteps<160:
+            dTheta += theta_step / 50
             self.btt.rot_4(self.initial_wp + dTheta, DEFAULT_FEEDRATE)
-            sleep(0.05)
+            sleep(0.1)
             reading = self.pm.read_power()
             self.reading_ready.emit(self.initial_wp + dTheta, reading)
+            fsteps += 1
 
         if abs(dTheta) >= 180:
             print("Reached maximum waveplate angle, stopping adjustment.")
@@ -78,8 +83,8 @@ class PumpTuner(QThread):
 
     def run(self):
         # 1) Prep
-        self.shutter.openPump()
-        self.shutter.closeProbe()
+        self.shutter.closePump()
+        self.shutter.openProbe()
         self.btt.powermeter()
         sleep(2)  # let the powermeter settle
 

@@ -25,6 +25,7 @@ class DynamicControlsTab(QWidget):
         self.shutter = self.IM.get("Shutter")
         self.Keithley2400 = self.IM.get("Keithley2400")
         self.stage  = self.IM.get("ESP")
+        self.spec = self.IM.get("SP2500")
         try:
             self.btt = self.IM.get("BTT")
         except KeyError:
@@ -56,7 +57,9 @@ class DynamicControlsTab(QWidget):
             'rail 1',
             'rail 2',
             'ramp gate voltage (v)',
-            'set time zero pos'
+            'set time zero pos',
+            'set spec slew rate',
+            'set spec wavelength (nm)'
         ]
         self.button_labels = [
             'open pump shutter',
@@ -71,7 +74,8 @@ class DynamicControlsTab(QWidget):
             'home detector polarizer',
             'home beamsplitter waveplate',
             'enable keithley output',
-            'disable keithley output'
+            'disable keithley output',
+            'set focus zero'
         ]
         self.entries = []
         self.go_buttons = []
@@ -186,6 +190,10 @@ class DynamicControlsTab(QWidget):
             self.btt.rot_3(value, DEFAULT_FEEDRATE)
         if label == 'probe half waveplate':
             self.btt.rot_4(value, DEFAULT_FEEDRATE)
+        if label == 'SP2500 slew rate':
+            self.spec.set_nm_min(value)
+        if label == 'set spec wavelength (nm)':
+            self.spec.set_nm(value)
         if label == 'probe power':
             tuner = ProbeTuner(
                 target       = value,
@@ -291,3 +299,11 @@ class DynamicControlsTab(QWidget):
             self.shutter.closeProbe()
             self.state.settings["probe_shutter_open"] = False
             self.update_state_display()
+        if cmd == 'set focus zero':
+            self.state.settings["focus_position"] = 0.0
+            self.update_state_display()
+
+    def showEvent(self, event):
+        """Refresh state display when tab becomes visible."""
+        super().showEvent(event)
+        self.update_state_display() 

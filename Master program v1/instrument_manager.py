@@ -1,5 +1,5 @@
 # instrument_manager.py
-from drivers import ESP300, SR830, BTT, SHUTTER, PM, Galvo_D2XX, Picoscope, Keithley2400, SP2500
+from drivers import ESP300, SR830, BTT, SHUTTER, PM, Galvo_D2XX, Picoscope, Keithley2400, SP2500_v2 as SP2500, Lakeshore331
 
 class InstrumentManager:
     def __init__(self, state):
@@ -17,6 +17,7 @@ class InstrumentManager:
         self._instruments['Picoscope'] = Picoscope.Picoscope()
         self._instruments['Keithley2400'] = Keithley2400.Keithley2400()
         self._instruments['SP2500'] = SP2500.SP2500()
+        self._instruments['Lakeshore331'] = Lakeshore331.LakeShore331()
         # …etc.
 
     def get(self, name):

@@ -44,11 +44,11 @@ class Picoscope(QObject):
             ps.PS5000A_CHANNEL['PS5000A_CHANNEL_A'],
             1,
             ps.PS5000A_COUPLING['PS5000A_DC'],
-            ps.PS5000A_RANGE['PS5000A_10V'],
+            ps.PS5000A_RANGE['PS5000A_1V'],
             0.0
         ))
         # --- Initialize digital port D0–D7 with 1.5 V threshold ---
-        threshold_volts = 1.5
+        threshold_volts = 2.2
         logic_level = int(threshold_volts / 5.0 * 32767)  # ≈9830
         assert_pico_ok(ps.ps5000aSetDigitalPort(
             chandle,

@@ -1,5 +1,6 @@
 # drivers/Galvo_D2XX.py
 import time
+import threading
 from ftd2xx import ftd2xx as ftd
 
 PIN_MASK = 0x1F  # D0..D4 used
@@ -37,12 +38,16 @@ class GALVO:
     - Auto-selects the FT232H "Single RS232-HS" (your index 0).
     - No libusb/pyusb, so it coexists with the SP2500 on VCP.
     """
-    def __init__(self, *, frequency=200_000, pin_mask=PIN_MASK,
+    def __init__(self, *, frequency=5_000, pin_mask=PIN_MASK,
                  prefer_type=8, prefer_desc_substr="Single RS232-HS",
                  force_index=None):
         self.pin_mask = pin_mask & 0xFF
         self.frequency = int(frequency)
         self.dev = self._open_device(prefer_type, prefer_desc_substr, force_index)
+               # Cache & lock for one-axis moves (keep other axis)
+        self._lock = threading.RLock()
+        self._x_last = 0.0
+        self._y_last = 0.0
 
         # Low-latency config (wrap “nice-to-have” calls)
         self._safe(self.dev.resetDevice)
@@ -130,7 +135,25 @@ class GALVO:
 
     # ---- Public API ----
     def move(self, x: float, y: float) -> bool:
-        return self.send_frame_with_verification(moveXY(x, y))
+        # Single atomic update: send both axes, update cache only on success
+        with self._lock:
+            ok = self.send_frame_with_verification(moveXY(x, y))
+            if ok:
+                # Respect existing clamping range [-1, +1]
+                self._x_last = x if -1.0 <= x <= 1.0 else ( -1.0 if x < -1.0 else 1.0 )
+                self._y_last = y if -1.0 <= y <= 1.0 else ( -1.0 if y < -1.0 else 1.0 )
+            return ok
+
+    # Move one axis while keeping the last commanded value of the other
+    def move_x(self, x: float) -> bool:
+        with self._lock:
+            y_keep = self._y_last
+        return self.move(x, y_keep)
+
+    def move_y(self, y: float) -> bool:
+        with self._lock:
+            x_keep = self._x_last
+        return self.move(x_keep, y)
 
     def close(self):
         # Return FTDI to normal mode and release

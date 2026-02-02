@@ -2,7 +2,7 @@ import serial
 import time
 PELLICLE = 60
 EMPTY = 20
-POWERMETER = 92
+POWERMETER = 90
 ROTATION_MOUNT = 3.6
 class BTT:
     def __init__(self, state):
@@ -48,20 +48,23 @@ class BTT:
     def cryoZ(self, dz, feed):
         self.send_gcode(1, f'G1 Z{dz} F{feed:.1f}')
 
-    def focus(self, dz, feed):
-        self.send_gcode(1, f'G1 E{dz} F{feed:.1f}')
+    def focus(self, f_pos):
+        current_focus = self.state.settings["focus_position"] 
+        self.state.settings["focus_position"] =  f_pos
+        dz = f_pos - current_focus
+        self.send_gcode(1, f'G1 E{dz} F{3000}')
 
     def rotZ(self, dz, feed):
         self.send_gcode(1, f'G1 E{dz} F{feed:.1f}')
         
     def pellicles(self):
-        self.send_gcode(2, f'G0 X{PELLICLE} Y{PELLICLE} F{3000}')
+        self.send_gcode(2, f'G0 X{PELLICLE} Y{0} F{3000}')
 
     def clear(self):
-        self.send_gcode(2, f'G0 X{EMPTY} Y{EMPTY} F{3000}')
+        self.send_gcode(2, f'G0 X{EMPTY} Y{PELLICLE} F{3000}')
 
     def powermeter(self):
-        self.send_gcode(2, f'G0 X{POWERMETER} Y{EMPTY} F{3000}')
+        self.send_gcode(2, f'G0 X{POWERMETER} Y{PELLICLE} F{3000}')
 
     def homeRails(self):
         self.send_gcode(2, 'G28 X')

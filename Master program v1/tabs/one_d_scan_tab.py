@@ -37,6 +37,8 @@ class _Scan1DWorker(QThread):
         set_x_fn: Callable[[float], None],
         measure_fn: Callable[[], Tuple[float, float, float, float, float, float]],
         stop_flag_ref: List[bool],
+        measurement_name: str = "",
+        alignment_tab = None,
     ):
         super().__init__()
         self._xs = x_values
@@ -45,6 +47,8 @@ class _Scan1DWorker(QThread):
         self._set_x = set_x_fn
         self._measure = measure_fn
         self._stop_flag_ref = stop_flag_ref
+        self._measurement_name = measurement_name
+        self._alignment_tab = alignment_tab
 
     def run(self):
         try:
@@ -68,7 +72,23 @@ class _Scan1DWorker(QThread):
 
                     # Measure (returns 6-tuple)
                     try:
-                        d = self._measure()
+                        if self._measurement_name == "track offsets":
+                            # Special case: run alignment scan to find feature and get offsets
+                            if self._alignment_tab:
+                                result = self._alignment_tab.find_feature_sync()
+                                if result is None:
+                                    print("find_feature_sync returned None")
+                                    x_offset, y_offset = None, None
+                                else:
+                                    x_offset, y_offset = result
+                                d = (x_offset if x_offset is not None else math.nan, 
+                                     y_offset if y_offset is not None else math.nan,
+                                     math.nan, math.nan, math.nan, math.nan)
+                            else:
+                                print("No alignment tab available")
+                                d = (math.nan, math.nan, math.nan, math.nan, math.nan, math.nan)
+                        else:
+                            d = self._measure()
                     except Exception as e:
                         self.finished.emit(True, f"Measurement error at x={x}: {e}")
                         return
@@ -103,10 +123,11 @@ class OneDScanTab(QWidget):
       - IM.get("Galvo").movexy(x, y)
       - IM.get("SR830").read_x(), read_y(), read_r(), read_theta()
     """
-    def __init__(self, instrument_manager, state=None):
+    def __init__(self, instrument_manager, state=None, alignment_tab=None):
         super().__init__()
         self.IM = instrument_manager
         self.state = state
+        self.alignment_tab = alignment_tab
 
         # Try to fetch common instruments (optional; only needed by defaults)
         self.galvo = None
@@ -118,6 +139,7 @@ class OneDScanTab(QWidget):
         try:
             self.lockin = self.IM.get("SR830")
             self.stage  = self.IM.get("ESP")
+            self.BTT = self.IM.get("BTT")
         except Exception:
             pass
         # --- Keithley 2400 safe-voltage axis (≤ 50 mV ramp sub-steps) ---
@@ -134,6 +156,7 @@ class OneDScanTab(QWidget):
         self.AXIS_SETTERS["Newport Stage ps"] = lambda x: self.stage.move_and_wait_ps(float(x))
         self.AXIS_SETTERS["Galvo X "] = lambda x: self.galvo.movexy(float(x), 0.5)
         self.AXIS_SETTERS["Keithley V "] = lambda x: k2400.ramp_voltage(float(x))
+        self.AXIS_SETTERS["Pump Waveplate"] = lambda x: self.BTT.rot_3(float(x),5000)
         
 
         # Placeholder example for a voltage source (uncomment and adapt):
@@ -167,6 +190,7 @@ class OneDScanTab(QWidget):
             self.MEASUREMENT_FUNCS["R (calculated), I, V"] = _photocurrent_R_read
 
         self.MEASUREMENT_FUNCS["(dummy) all NaN"] = lambda: (math.nan,)*6
+        self.MEASUREMENT_FUNCS["track offsets"] = lambda: (math.nan, math.nan, math.nan, math.nan, math.nan, math.nan)  # Special case handled in worker
 
         self.AXIS_SETTERS["(dummy) no-op axis"] = lambda x: None
 
@@ -361,7 +385,9 @@ class OneDScanTab(QWidget):
             wait_s=wait_s,
             set_x_fn=set_x_fn,
             measure_fn=measure_fn,
-            stop_flag_ref=self._stop_flag
+            stop_flag_ref=self._stop_flag,
+            measurement_name=meas_key,
+            alignment_tab=self.alignment_tab
         )
         self._worker.progress.connect(self._on_progress, Qt.ConnectionType.QueuedConnection)
         self._worker.scan_done.connect(self._on_scan_done, Qt.ConnectionType.QueuedConnection)

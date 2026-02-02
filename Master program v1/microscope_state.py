@@ -21,6 +21,14 @@ class MicroscopeState:
             "delay_ps": 0.0,
             "pump_shutter_open": False,
             "probe_shutter_open": False,
+            "x_original_feature_pos": 0.0,
+            "y_original_feature_pos": 0.0,
+            "x_found_feature_pos": 0.0,
+            "y_found_feature_pos": 0.0,
+            "x_start_position": 0.0,
+            "y_start_position": 0.0,
+            "x_offset": 0.0,
+            "y_offset": 0.0,
             # …
         }
         self.load()

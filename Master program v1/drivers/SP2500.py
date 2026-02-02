@@ -116,7 +116,7 @@ if __name__ == "__main__":
     print("ID:", spec.identify())
     wl = spec.get_wavelength_nm()
     print(f"Current wavelength: {wl} nm")
-    # spec.set_wavelength_nm(600.0)
+    spec.set_wavelength_nm(800.0)
     # spec.switch_grating(2)
     spec.close()
 

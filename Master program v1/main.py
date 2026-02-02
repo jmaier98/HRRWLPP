@@ -16,6 +16,10 @@ from tabs.PumpProbeOverlapTab import PumpProbeOverlapTab
 from tabs.iv_curve_tab import IVCurveTab
 from tabs.four_map_scan_tab import FourMapScanTab
 from tabs.one_d_scan_tab import OneDScanTab
+from tabs.two_d_scan_tabv2 import TwoDScanTab
+from tabs.temperature_control_tab import TemperatureControlTab
+from tabs.find_focus_tab import FindFocusTab
+from tabs.alignment_tab import AlignmentTab
 
 class MainWindow(QMainWindow):
     def __init__(self,instrument_manager, state):
@@ -30,14 +34,20 @@ class MainWindow(QMainWindow):
 
         tabs.addTab(WebcamTab(instrument_manager, state), "Webcam")
         tabs.addTab(DynamicControlsTab(instrument_manager,state), "All Controls")
+        tabs.addTab(FindFocusTab(instrument_manager, state), "Find Focus")
+        alignment_tab = AlignmentTab(instrument_manager, state)
+        tabs.addTab(alignment_tab, "Alignment")
+        tabs.addTab(OneDScanTab(instrument_manager, state, alignment_tab), "1D Scan")
+        tabs.addTab(TwoDScanTab(instrument_manager, state), "2D Scan")
         tabs.addTab(ImagingTab(instrument_manager, state), "Imaging")
         tabs.addTab(LiveLockinTab(instrument_manager), "Live Lock-in")
-        tabs.addTab(PowerMeterTab(instrument_manager, state), "Power Meter")
-        tabs.addTab(OneDScanTab(instrument_manager, state), "1D Scan")
         tabs.addTab(PhotocurrentScanTab(instrument_manager, state), "Photocurrent Scan")
         tabs.addTab(PumpProbeOverlapTab(instrument_manager, state), "Pump-Probe Overlap")
         tabs.addTab(IVCurveTab(instrument_manager, state), "IV Curve")
         tabs.addTab(FourMapScanTab(instrument_manager, state), "Four Map Scan")
+        tabs.addTab(TemperatureControlTab(instrument_manager, state), "Temperature")
+        
+        
         
 
 
