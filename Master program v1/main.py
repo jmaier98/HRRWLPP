@@ -17,6 +17,7 @@ from tabs.iv_curve_tab import IVCurveTab
 from tabs.four_map_scan_tab import FourMapScanTab
 from tabs.one_d_scan_tab import OneDScanTab
 from tabs.two_d_scan_tabv2 import TwoDScanTab
+from tabs.three_d_scan_tab_v2 import ThreeDScanTab
 from tabs.temperature_control_tab import TemperatureControlTab
 from tabs.find_focus_tab import FindFocusTab
 from tabs.alignment_tab import AlignmentTab
@@ -39,6 +40,8 @@ class MainWindow(QMainWindow):
         tabs.addTab(alignment_tab, "Alignment")
         tabs.addTab(OneDScanTab(instrument_manager, state, alignment_tab), "1D Scan")
         tabs.addTab(TwoDScanTab(instrument_manager, state), "2D Scan")
+        tabs.addTab(ThreeDScanTab(instrument_manager, state, alignment_tab), "3D Scan")
+        tabs.addTab(PowerMeterTab(instrument_manager, state), "Power Meter")
         tabs.addTab(ImagingTab(instrument_manager, state), "Imaging")
         tabs.addTab(LiveLockinTab(instrument_manager), "Live Lock-in")
         tabs.addTab(PhotocurrentScanTab(instrument_manager, state), "Photocurrent Scan")

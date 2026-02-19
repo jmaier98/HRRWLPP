@@ -172,6 +172,10 @@ class TwoDScanTab(QWidget):
                     self.lockin.read_x2(),
                 )
             )
+            def _photocurrent_readxy():
+                R = self.lockin.read_x2()
+                Vx, Vy, pd = self.lockin.read_xy()
+                return (R, Vx, Vy, pd, math.nan, math.nan)
             def _photocurrent_R_read():
                 V = self.lockin.read_x2() if hasattr(self.lockin, 'read_x2') else math.nan
                 I = self.lockin.read_x()
@@ -186,6 +190,7 @@ class TwoDScanTab(QWidget):
             def _CD_with_R():
                 x_ch,a_ch = self.lockin.readX_A()
                 return (x_ch, a_ch, _safe_div(x_ch, a_ch), math.nan, math.nan, math.nan)
+            self.MEASUREMENT_FUNCS['PC and reflect (both channels)'] = _photocurrent_readxy
             self.MEASUREMENT_FUNCS['R (calc), I, V'] = _photocurrent_R_read
             self.MEASUREMENT_FUNCS['X, A, X/A (calc)'] = _CD_with_R
 

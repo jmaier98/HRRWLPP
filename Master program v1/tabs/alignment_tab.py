@@ -420,7 +420,107 @@ class AlignmentTab(QWidget):
     
     def _find_feature(self):
         """Find the current feature position."""
-        self._run_alignment_scan(update_original=False)
+        try:
+            start_x = float(self.start_x.text())
+            start_y = float(self.start_y.text())
+            horiz_distance = float(self.horiz_distance.text())
+            vert_distance = float(self.vert_distance.text())
+            n_horiz_points = int(self.n_horiz_points.text())
+            n_vert_points = int(self.n_vert_points.text())
+            horiz_left_to_right = self.horiz_left_to_right.isChecked()
+            vert_bottom_to_top = self.vert_bottom_to_top.isChecked()
+            wait_ms = int(self.wait_ms.text())
+        except ValueError:
+            QMessageBox.warning(self, "Input Error", "Invalid input values.")
+            return
+        
+        if not self.galvo or not self.lockin:
+            QMessageBox.critical(self, "Setup Error", "Galvo or Lock-in not available.")
+            return
+        
+        # Clear plots
+        self.ax_top.clear()
+        self.ax_top.set_title("Horizontal Scan")
+        self.ax_top.set_xlabel("Galvo X")
+        self.ax_top.set_ylabel("Lock-in X")
+        self.canvas_top.draw_idle()
+        
+        self.ax_bottom.clear()
+        self.ax_bottom.set_title("Vertical Scan")
+        self.ax_bottom.set_xlabel("Galvo Y")
+        self.ax_bottom.set_ylabel("Lock-in X")
+        self.canvas_bottom.draw_idle()
+        
+        # Reset runtime state
+        self._stop_flag[0] = False
+        self._horizontal_data = None
+        self._vertical_data = None
+        self._current_start_x = start_x
+        self._current_start_y = start_y
+        self._update_original = False  # Always false for find feature
+        
+        # Define functions
+        def set_galvo(x, y):
+            self.galvo.move(x, y)
+        
+        def measure():
+            return self.lockin.read_PD()
+        
+        # Create worker
+        self._worker = _AlignmentWorker(
+            start_x=start_x,
+            start_y=start_y,
+            horiz_distance=horiz_distance,
+            vert_distance=vert_distance,
+            n_horiz_points=n_horiz_points,
+            n_vert_points=n_vert_points,
+            horiz_left_to_right=horiz_left_to_right,
+            vert_bottom_to_top=vert_bottom_to_top,
+            set_galvo_fn=set_galvo,
+            measure_fn=measure,
+            stop_flag_ref=self._stop_flag,
+            wait_s=wait_ms / 1000.0,
+        )
+        
+        # Disable buttons during scan
+        self.set_original_btn.setEnabled(False)
+        self.find_feature_btn.setEnabled(False)
+        self.stop_btn.setEnabled(True)
+        self.status_lbl.setText("Scanning…")
+        
+        # Connect progress signals for real-time plot updates
+        self._worker.progress.connect(self._on_progress, Qt.ConnectionType.QueuedConnection)
+        
+        # Run synchronously
+        success, message = self._worker.run_sync()
+        
+        # Disconnect progress signal
+        self._worker.progress.disconnect(self._on_progress)
+        
+        # Set offsets in state variables if scan completed successfully
+        if success and message.startswith("Alignment complete"):
+            try:
+                msg_parts = message.split()
+                if len(msg_parts) >= 8:
+                    x_center = float(msg_parts[4].rstrip(','))
+                    y_center = float(msg_parts[7])
+                    
+                    # Update found positions and calculate offsets
+                    self.state.settings["x_found_feature_pos"] = x_center
+                    self.state.settings["y_found_feature_pos"] = y_center
+                    
+                    # Calculate offsets (found - original)
+                    orig_x = self.state.settings.get("x_original_feature_pos", 0.0)
+                    orig_y = self.state.settings.get("y_original_feature_pos", 0.0)
+                    self.state.settings["x_offset"] = x_center - orig_x
+                    self.state.settings["y_offset"] = y_center - orig_y
+                    
+                    self.state.save()
+            except (ValueError, IndexError) as e:
+                print(f"Error parsing alignment result: {e}")
+        
+        # Update UI (same as _on_finished would do)
+        self._on_finished(success, message, False)
     
     def _run_alignment_scan(self, update_original: bool):
         """Run the alignment scan."""
@@ -469,7 +569,7 @@ class AlignmentTab(QWidget):
             self.galvo.move(x, y)
         
         def measure():
-            return self.lockin.read_x2()
+            return self.lockin.read_PD()
         
         # Start worker
         self._worker = _AlignmentWorker(
@@ -600,6 +700,7 @@ class AlignmentTab(QWidget):
                         self.state.settings["x_found_feature_pos"] = x_center
                         self.state.settings["y_found_feature_pos"] = y_center
                         # Reset offsets to 0 when setting original position
+                        print("saving zeros")
                         self.state.settings["x_offset"] = 0.0
                         self.state.settings["y_offset"] = 0.0
                         self.state.save()
@@ -614,115 +715,16 @@ class AlignmentTab(QWidget):
                         orig_y = self.state.settings.get("y_original_feature_pos", 0.0)
                         self.state.settings["x_offset"] = x_center - orig_x
                         self.state.settings["y_offset"] = y_center - orig_y
-                        
+                        print("saved offsets")
                         self.state.save()
                         offset_x = self.state.settings["x_offset"]
                         offset_y = self.state.settings["y_offset"]
+
                         self.info_lbl.setText(f"Found position: X={x_center:.4f}, Y={y_center:.4f} | Offset: X={offset_x:.4f}, Y={offset_y:.4f}")
             except (ValueError, IndexError) as e:
                 print(f"Error parsing positions from message: {e}")
         
         self._worker = None
-    
-    def find_feature_sync(self) -> Tuple[float | None, float | None]:
-        """
-        Synchronous version of find feature that returns (x_offset, y_offset).
-        Updates the alignment tab plots in real-time.
-        Returns (None, None) if alignment fails.
-        """
-        if not self.galvo or not self.lockin:
-            return None, None
-            
-        try:
-            # Use the same start positions as the async version
-            start_x = float(self.start_x.text())
-            start_y = float(self.start_y.text())
-            
-            # Use the same parameters as the async version
-            horiz_distance = float(self.horiz_distance.text())
-            vert_distance = float(self.vert_distance.text())
-            n_horiz_points = int(self.n_horiz_points.text())
-            n_vert_points = int(self.n_vert_points.text())
-            horiz_left_to_right = self.horiz_left_to_right.isChecked()
-            vert_bottom_to_top = self.vert_bottom_to_top.isChecked()
-            wait_ms = int(self.wait_ms.text())
-        except ValueError:
-            print("Invalid input values in alignment tab - cannot run sync find feature")
-            return None, None
-            return None, None
-            
-            # Clear plots like the async version does
-            self.ax_top.clear()
-            self.ax_top.set_title("Horizontal Scan")
-            self.ax_top.set_xlabel("Galvo X")
-            self.ax_top.set_ylabel("Lock-in X")
-            self.canvas_top.draw_idle()
-            
-            self.ax_bottom.clear()
-            self.ax_bottom.set_title("Vertical Scan")
-            self.ax_bottom.set_xlabel("Galvo Y")
-            self.ax_bottom.set_ylabel("Lock-in X")
-            self.canvas_bottom.draw_idle()
-            
-            # Define functions
-            def set_galvo(x, y):
-                self.galvo.move(x, y)
-            
-            def measure():
-                return self.lockin.read_x2()
-            
-            # Create worker and run synchronously
-            stop_flag = [False]
-            worker = _AlignmentWorker(
-                start_x=start_x,
-                start_y=start_y,
-                horiz_distance=horiz_distance,
-                vert_distance=vert_distance,
-                n_horiz_points=n_horiz_points,
-                n_vert_points=n_vert_points,
-                horiz_left_to_right=horiz_left_to_right,
-                vert_bottom_to_top=vert_bottom_to_top,
-                set_galvo_fn=set_galvo,
-                measure_fn=measure,
-                stop_flag_ref=stop_flag,
-                wait_s=wait_ms / 1000.0,
-            )
-            
-            # Connect progress signals to update plots in real-time
-            worker.progress.connect(self._on_progress, Qt.ConnectionType.DirectConnection)
-            
-            # Run synchronously and get result
-            success, message = worker.run_sync()
-            
-            if success and "Alignment complete" in message:
-                try:
-                    msg_parts = message.split()
-                    if len(msg_parts) >= 8:
-                        x_center = float(msg_parts[4].rstrip(','))
-                        y_center = float(msg_parts[7])
-                        
-                        # Calculate offsets
-                        orig_x = self.state.settings.get("x_original_feature_pos", 0.0)
-                        orig_y = self.state.settings.get("y_original_feature_pos", 0.0)
-                        x_offset = x_center - orig_x
-                        y_offset = y_center - orig_y
-                        
-                        # Update state
-                        self.state.settings["x_found_feature_pos"] = x_center
-                        self.state.settings["y_found_feature_pos"] = y_center
-                        self.state.settings["x_offset"] = x_offset
-                        self.state.settings["y_offset"] = y_offset
-                        self.state.save()
-                        
-                        return x_offset, y_offset
-                except (ValueError, IndexError) as e:
-                    print(f"Error parsing alignment result: {e}")
-            
-            return None, None
-            
-        except Exception as e:
-            print(f"Sync find feature error: {e}")
-            return None, None
     
     def closeEvent(self, event):
         """Clean shutdown."""

@@ -471,7 +471,7 @@ class FindFocusTab(QWidget):
             self.galvo.move(x, y)
         
         def measure():
-            return self.lockin.read_x2()
+            return self.lockin.read_PD()
         
         # Start worker
         self._worker = _FindFocusWorker(

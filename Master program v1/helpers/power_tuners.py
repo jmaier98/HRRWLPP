@@ -36,7 +36,7 @@ class ProbeTuner(QThread):
 
             # step sign
             newdiff = abs(self.target - reading)
-            theta_step = 2 if newdiff < diff else -2
+            theta_step = 1 if newdiff < diff else -1
         else:
             dTheta = 0
             theta_step = 0
@@ -55,7 +55,7 @@ class ProbeTuner(QThread):
         reading = self.pm.read_power()
         self.reading_ready.emit(self.initial_wp + dTheta, reading)
         fsteps = 0
-        while abs(self.target - reading) > self.target*.01 and abs(dTheta) < 180 and fsteps<160:
+        while abs(self.target - reading) > self.target*.02 and abs(dTheta) < 180 and fsteps<160:
             dTheta += theta_step / 50
             self.btt.rot_4(self.initial_wp + dTheta, DEFAULT_FEEDRATE)
             sleep(0.1)

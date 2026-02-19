@@ -88,7 +88,7 @@ class BTT:
         self.state.settings["pump_polarizer_angle"] = angle_x
 
         travel_mm = angle_x / ROTATION_MOUNT
-        self.send_gcode(3, f'G0 X{travel_mm:.3f} F{feedrate}')
+        self.send_gcode(3, f'G0 X{travel_mm:.3f} F5000')
 
     def rot_2(self, angle_y, feedrate):
         self.state.settings["probe_polarizer_angle"] = angle_y
@@ -100,7 +100,7 @@ class BTT:
         self.state.settings["pump_waveplate_angle"] = angle_z
 
         travel_mm = angle_z / (ROTATION_MOUNT*5)  
-        self.send_gcode(3, f'G0 Z{travel_mm:.3f} F{feedrate}')
+        self.send_gcode(3, f'G0 Z{travel_mm:.3f} F5000')
 
 
     def rot_4(self, angle_e, feedrate):

@@ -16,8 +16,10 @@ class SR830:
         """
         self._rm = pyvisa.ResourceManager()
         self._inst1 = self._rm.open_resource(f'GPIB::{ADDRESS_1}::INSTR')
+        self._inst1.clear()
         print("SR830 onlineA")
         self._inst2 = self._rm.open_resource(f'GPIB::{ADDRESS_2}::INSTR')
+        self._inst2.clear()
         print("SR830 onlineB")
 
     def read_x(self):
@@ -40,14 +42,24 @@ class SR830:
         except Exception as e:
             print(f"Error in readx1: {e}")
             return None
-    def read_xy(self) -> tuple[float, float]:
+    def read_xy(self) -> tuple[float, float, float]:
         """
-        Fastest read of X and Y: SNAP?1,2 → "xval,yval"
-        Returns (X, Y) as floats.
+        Fastest read of X, Y, and Aux 1: SNAP?1,2,5 → "xval,yval,aux1val"
+        Returns (X, Y, Aux1) as floats.
         """
-        resp = self._inst1.query("SNAP?1,2")
-        x_str, y_str = resp.strip().split(',')
-        return float(x_str), float(y_str)
+        resp = self._inst1.query("SNAP?1,2,5")
+        x_str, y_str, aux1_str = resp.strip().split(',')
+        return float(x_str), float(y_str), float(aux1_str)
+    def read_PD(self):
+        """
+        Read the photodetector voltage from the middle lockin amplifier.
+        (Assumes that the command "OUTP? 3" returns the PD voltage.)
+        """
+        try:
+            return float(self._inst1.query("OAUX? 1"))
+        except Exception as e:
+            print(f"Error in read_PD: {e}")
+            return None
     
     def read_x2(self):
         """
@@ -69,14 +81,14 @@ class SR830:
         except Exception as e:
             print(f"Error in readx1: {e}")
             return None
-    def read_xy2(self) -> tuple[float, float]:
+    def read_xy2(self) -> tuple[float, float, float]:
         """
-        Fastest read of X and Y: SNAP?1,2 → "xval,yval"
-        Returns (X, Y) as floats.
+        Fastest read of X, Y, and Aux 1: SNAP?1,2,5 → "xval,yval,aux1val"
+        Returns (X, Y, Aux1) as floats.
         """
-        resp = self._inst2.query("SNAP?1,2")
-        x_str, y_str = resp.strip().split(',')
-        return float(x_str), float(y_str)
+        resp = self._inst2.query("SNAP?1,2,5")
+        x_str, y_str, aux1_str = resp.strip().split(',')
+        return float(x_str), float(y_str), float(aux1_str)
     def readX_A(self) -> tuple[float, float]:
         """
         Return the X-channel output and Aux 1 input from lockin 1.
@@ -107,10 +119,12 @@ if __name__ == "__main__":
     print(f"Single read → X={x:+.6e}")
     y = lockin.read_y()
     print(f"Single read → Y={y:+.6e}")
-    x, y = lockin.read_xy()
+    x, y, p = lockin.read_xy()
     print(f"Single read → X={x:+.6e}, Y={y:+.6e}")
     x = lockin.read_x2()
     print(f"Single read → X2={x:+.6e}")
+    pd = lockin.read_PD()
+    print(f"Single read → PD={pd:+.6e}")
 
 
     lockin.close()

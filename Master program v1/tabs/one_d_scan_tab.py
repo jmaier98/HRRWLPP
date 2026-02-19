@@ -39,11 +39,13 @@ class _Scan1DWorker(QThread):
         stop_flag_ref: List[bool],
         measurement_name: str = "",
         alignment_tab = None,
+        wait_before_scan_s: float = 0.0,
     ):
         super().__init__()
         self._xs = x_values
         self._n_scans = max(1, int(n_scans))
         self._wait_s = max(0.0, float(wait_s))
+        self._wait_before_scan_s = max(0.0, float(wait_before_scan_s))
         self._set_x = set_x_fn
         self._measure = measure_fn
         self._stop_flag_ref = stop_flag_ref
@@ -69,23 +71,24 @@ class _Scan1DWorker(QThread):
                     # Wait to settle
                     if self._wait_s > 0:
                         time.sleep(self._wait_s)
+                    
+                    # Wait before first measurement of scan
+                    if ix == 0 and self._wait_before_scan_s > 0:
+                        time.sleep(self._wait_before_scan_s)
 
                     # Measure (returns 6-tuple)
                     try:
                         if self._measurement_name == "track offsets":
                             # Special case: run alignment scan to find feature and get offsets
                             if self._alignment_tab:
-                                result = self._alignment_tab.find_feature_sync()
-                                if result is None:
-                                    print("find_feature_sync returned None")
-                                    x_offset, y_offset = None, None
-                                else:
-                                    x_offset, y_offset = result
-                                d = (x_offset if x_offset is not None else math.nan, 
-                                     y_offset if y_offset is not None else math.nan,
-                                     math.nan, math.nan, math.nan, math.nan)
+                                # Call the alignment tab's find feature method (same as button press)
+                                print("running alignment")
+                                self._alignment_tab._find_feature()
+                                # Offsets are now set in state variables by _find_feature
+                                x_offset = self._alignment_tab.state.settings.get("x_offset", math.nan)
+                                y_offset = self._alignment_tab.state.settings.get("y_offset", math.nan)
+                                d = (x_offset, y_offset, math.nan, math.nan, math.nan, math.nan)
                             else:
-                                print("No alignment tab available")
                                 d = (math.nan, math.nan, math.nan, math.nan, math.nan, math.nan)
                         else:
                             d = self._measure()
@@ -221,6 +224,7 @@ class OneDScanTab(QWidget):
         self.x_end   = QLineEdit("0.01");  self.x_end.setValidator(dv)
         self.x_step  = QLineEdit("0.001"); self.x_step.setValidator(dv_pos)
         self.wait_ms = QLineEdit("10");    self.wait_ms.setValidator(QIntValidator(0, 1_000_000, self))
+        self.wait_before_scan_ms = QLineEdit("0");    self.wait_before_scan_ms.setValidator(QIntValidator(0, 1_000_000, self))
         self.n_avg   = QLineEdit("4");     self.n_avg.setValidator(iv_pos)
 
         form.addRow("X axis:", self.axis_combo)
@@ -230,6 +234,7 @@ class OneDScanTab(QWidget):
         form.addRow("X end:",   self.x_end)
         form.addRow("X step:",  self.x_step)
         form.addRow("Wait (ms):", self.wait_ms)
+        form.addRow("Wait before each scan (ms):", self.wait_before_scan_ms)
         form.addRow("# of averages (scans):", self.n_avg)
 
         # Save controls
@@ -345,6 +350,7 @@ class OneDScanTab(QWidget):
         # Wait & averages
         try:
             wait_s = max(0.0, int(self.wait_ms.text()) / 1000.0)
+            wait_before_scan_s = max(0.0, int(self.wait_before_scan_ms.text()) / 1000.0)
             n_avg = int(self.n_avg.text())
             if n_avg < 1:
                 raise ValueError
@@ -387,7 +393,8 @@ class OneDScanTab(QWidget):
             measure_fn=measure_fn,
             stop_flag_ref=self._stop_flag,
             measurement_name=meas_key,
-            alignment_tab=self.alignment_tab
+            alignment_tab=self.alignment_tab,
+            wait_before_scan_s=wait_before_scan_s
         )
         self._worker.progress.connect(self._on_progress, Qt.ConnectionType.QueuedConnection)
         self._worker.scan_done.connect(self._on_scan_done, Qt.ConnectionType.QueuedConnection)
