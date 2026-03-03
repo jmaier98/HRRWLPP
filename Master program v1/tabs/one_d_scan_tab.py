@@ -191,6 +191,11 @@ class OneDScanTab(QWidget):
                 self.lockin.read_theta(),
             )
             self.MEASUREMENT_FUNCS["R (calculated), I, V"] = _photocurrent_R_read
+            def _double_pc():
+                Vx1, Vy1, PC = self.lockin.read_xy()
+                Vx2, Vy2, PC2 = self.lockin.read_xy2()
+                return (Vx1, Vy1, Vx2, Vy2, PC, math.nan)
+            self.MEASUREMENT_FUNCS["Double PC (X,Y of both)"] = _double_pc
 
         self.MEASUREMENT_FUNCS["(dummy) all NaN"] = lambda: (math.nan,)*6
         self.MEASUREMENT_FUNCS["track offsets"] = lambda: (math.nan, math.nan, math.nan, math.nan, math.nan, math.nan)  # Special case handled in worker

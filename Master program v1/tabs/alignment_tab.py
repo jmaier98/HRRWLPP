@@ -19,10 +19,21 @@ def sigmoid(x, x0, w, A, B):
     return A + B / (1.0 + np.exp(-(np.asarray(x) - x0) / w))
 
 
+def double_sigmoid(x, x1, x2, w, A, B):
+    """
+    Hat (double sigmoid): rises at x1, falls at x2.
+    f(x) = A + B * [sig(x, x1, w) - sig(x, x2, w)]
+    Center = (x1 + x2) / 2. B can be negative for a dip.
+    Assumes x1 < x2.
+    """
+    x = np.asarray(x)
+    return A + B * (1.0 / (1.0 + np.exp(-(x - x1) / w)) - 1.0 / (1.0 + np.exp(-(x - x2) / w)))
+
+
 def fit_sigmoid_and_extract_center(x_data: np.ndarray, y_data: np.ndarray) -> Tuple[Optional[float], Optional[dict]]:
     """
     Fit a sigmoid to (x_data, y_data) and extract the center position (x0).
-    
+
     Returns: (center_position, fit_info_dict) or (None, None) if fit fails
     """
     try:
@@ -30,37 +41,101 @@ def fit_sigmoid_and_extract_center(x_data: np.ndarray, y_data: np.ndarray) -> Tu
         valid = np.isfinite(y_data)
         if np.sum(valid) < 4:
             return None, None
-        
+
         x_clean = x_data[valid]
         y_clean = y_data[valid]
-        
+
         # Initial parameter guess
         y_min, y_max = np.min(y_clean), np.max(y_clean)
         x_mid = np.mean(x_clean)
         width_guess = (np.max(x_clean) - np.min(x_clean)) / 4.0
-        
+
         # Bounds for fitting
         p0 = [x_mid, width_guess, y_min, y_max - y_min]
         bounds = (
             [np.min(x_clean) - width_guess, 1e-6, -np.inf, -np.inf],
             [np.max(x_clean) + width_guess, (np.max(x_clean) - np.min(x_clean)) * 2, np.inf, np.inf]
         )
-        
+
         # Fit
         popt, pcov = curve_fit(sigmoid, x_clean, y_clean, p0=p0, bounds=bounds, maxfev=5000)
         x0, w, A, B = popt
-        
+
         fit_info = {
+            'model': 'sigmoid',
             'x0': x0,
             'w': w,
             'A': A,
             'B': B,
         }
-        
+
         return x0, fit_info
-        
+
     except Exception as e:
         print(f"Sigmoid fit error: {e}")
+        return None, None
+
+
+def fit_double_sigmoid_and_extract_center(x_data: np.ndarray, y_data: np.ndarray) -> Tuple[Optional[float], Optional[dict]]:
+    """
+    Fit a double sigmoid (hat shape) to (x_data, y_data).
+    Center = midpoint between the two inflection points (x1 + x2) / 2.
+
+    Returns: (center_position, fit_info_dict) or (None, None) if fit fails
+    """
+    try:
+        valid = np.isfinite(y_data)
+        if np.sum(valid) < 5:
+            return None, None
+
+        x_clean = x_data[valid]
+        y_clean = y_data[valid]
+
+        span = np.max(x_clean) - np.min(x_clean)
+        y_min, y_max = np.min(y_clean), np.max(y_clean)
+
+        # Estimate center from peak (works for both hat and dip)
+        peak_idx = np.argmax(np.abs(y_clean - np.mean(y_clean)))
+        x_peak = x_clean[peak_idx]
+
+        # Initial guesses: x1 and x2 symmetric around peak, ~1/4 span apart each
+        half_width_guess = span / 8.0
+        x1_guess = x_peak - half_width_guess
+        x2_guess = x_peak + half_width_guess
+        w_guess = max(span / 20.0, 1e-6)  # sharp transitions
+
+        A_guess = y_min
+        B_guess = y_max - y_min  # positive for hat; allow negative via bounds
+
+        p0 = [x1_guess, x2_guess, w_guess, A_guess, B_guess]
+        x_lo, x_hi = np.min(x_clean), np.max(x_clean)
+        bounds = (
+            [x_lo - span * 0.5, x_lo - span * 0.5, 1e-9, -np.inf, -np.inf],
+            [x_hi + span * 0.5, x_hi + span * 0.5, span,  np.inf,  np.inf],
+        )
+
+        popt, _ = curve_fit(double_sigmoid, x_clean, y_clean, p0=p0, bounds=bounds, maxfev=10000)
+        x1, x2, w, A, B = popt
+
+        # Enforce x1 <= x2 (swap if optimizer flipped them)
+        if x1 > x2:
+            x1, x2 = x2, x1
+
+        center = (x1 + x2) / 2.0
+
+        fit_info = {
+            'model': 'double_sigmoid',
+            'x1': x1,
+            'x2': x2,
+            'w': w,
+            'A': A,
+            'B': B,
+        }
+
+        return center, fit_info
+
+    except Exception as e:
+        print(f"Double sigmoid fit error: {e}")
         return None, None
 
 
@@ -90,6 +165,7 @@ class _AlignmentWorker(QThread):
         measure_fn: Callable[[], float],
         stop_flag_ref: List[bool],
         wait_s: float = 0.05,
+        fit_mode: str = "sigmoid",  # "sigmoid" or "double_sigmoid"
     ):
         super().__init__()
         self.start_x = start_x
@@ -104,6 +180,7 @@ class _AlignmentWorker(QThread):
         self.measure = measure_fn
         self.stop_flag_ref = stop_flag_ref
         self.wait_s = wait_s
+        self.fit_mode = fit_mode
         
     def run(self):
         try:
@@ -259,18 +336,24 @@ class _AlignmentWorker(QThread):
                     y_data.append(np.nan)
             
             y_data = np.array(y_data, dtype=float)
-            
-            # Fit sigmoid and extract center
-            center_pos, fit_info = fit_sigmoid_and_extract_center(positions, y_data)
-            
-            # Generate fitted curve for plotting
-            if fit_info is not None:
-                pos_fine = np.linspace(np.min(positions), np.max(positions), 100)
-                fitted_y = sigmoid(pos_fine, fit_info['x0'], fit_info['w'], fit_info['A'], fit_info['B'])
+
+            # Fit and extract center
+            pos_fine = np.linspace(np.min(positions), np.max(positions), 200)
+            if self.fit_mode == "double_sigmoid":
+                center_pos, fit_info = fit_double_sigmoid_and_extract_center(positions, y_data)
+                if fit_info is not None:
+                    fitted_y = double_sigmoid(pos_fine, fit_info['x1'], fit_info['x2'],
+                                              fit_info['w'], fit_info['A'], fit_info['B'])
+                else:
+                    fitted_y = np.full_like(pos_fine, np.nan)
             else:
-                pos_fine = positions
-                fitted_y = np.full_like(positions, np.nan)
-            
+                center_pos, fit_info = fit_sigmoid_and_extract_center(positions, y_data)
+                if fit_info is not None:
+                    fitted_y = sigmoid(pos_fine, fit_info['x0'], fit_info['w'],
+                                       fit_info['A'], fit_info['B'])
+                else:
+                    fitted_y = np.full_like(pos_fine, np.nan)
+
             return center_pos, positions, y_data, fitted_y
             
         except Exception as e:
@@ -339,7 +422,12 @@ class AlignmentTab(QWidget):
         # Wait time
         self.wait_ms = QLineEdit("50")
         self.wait_ms.setValidator(QIntValidator(0, 1_000_000, self))
-        
+
+        # Fit mode selector
+        self.fit_mode_combo = QComboBox()
+        self.fit_mode_combo.addItem("Single Sigmoid (edge)", "sigmoid")
+        self.fit_mode_combo.addItem("Double Sigmoid / Hat (thin electrode)", "double_sigmoid")
+
         # Form layout
         form.addRow("Start X (galvo):", self.start_x)
         form.addRow("Start Y (galvo):", self.start_y)
@@ -354,6 +442,8 @@ class AlignmentTab(QWidget):
         form.addRow(self.vert_bottom_to_top)
         form.addRow("", QLabel(""))  # spacer
         form.addRow("Wait (ms):", self.wait_ms)
+        form.addRow("", QLabel(""))  # spacer
+        form.addRow("Fit mode:", self.fit_mode_combo)
         
         # Buttons
         btn_row = QHBoxLayout()
@@ -480,17 +570,18 @@ class AlignmentTab(QWidget):
             measure_fn=measure,
             stop_flag_ref=self._stop_flag,
             wait_s=wait_ms / 1000.0,
+            fit_mode=self.fit_mode_combo.currentData(),
         )
-        
+
         # Disable buttons during scan
         self.set_original_btn.setEnabled(False)
         self.find_feature_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
         self.status_lbl.setText("Scanning…")
-        
+
         # Connect progress signals for real-time plot updates
         self._worker.progress.connect(self._on_progress, Qt.ConnectionType.QueuedConnection)
-        
+
         # Run synchronously
         success, message = self._worker.run_sync()
         
@@ -585,6 +676,7 @@ class AlignmentTab(QWidget):
             measure_fn=measure,
             stop_flag_ref=self._stop_flag,
             wait_s=wait_ms / 1000.0,
+            fit_mode=self.fit_mode_combo.currentData(),
         )
         
         self._worker.progress.connect(self._on_progress, Qt.ConnectionType.QueuedConnection)
@@ -614,65 +706,50 @@ class AlignmentTab(QWidget):
             self._vertical_data = scan_data
             self._update_vertical_plot()
     
+    def _fit_label(self):
+        mode = self.fit_mode_combo.currentData()
+        return "Hat fit" if mode == "double_sigmoid" else "Sigmoid fit"
+
+    def _plot_scan(self, ax, canvas, x_label, title_base, center_pos, trace_pos, trace_vals, fitted_vals):
+        """Shared helper for rendering a scan result onto an axis."""
+        ax.clear()
+        title = f"{title_base} - Center: {center_pos:.4f}" if center_pos is not None else title_base
+        ax.set_title(title)
+        ax.set_xlabel(x_label)
+        ax.set_ylabel("Lock-in X")
+
+        if len(trace_pos) > 0 and len(trace_vals) > 0:
+            ax.plot(trace_pos, trace_vals, 'o-', label="Measured", alpha=0.7)
+
+        if len(fitted_vals) > 0 and not np.all(np.isnan(fitted_vals)):
+            pos_fine = np.linspace(np.min(trace_pos), np.max(trace_pos), len(fitted_vals))
+            ax.plot(pos_fine, fitted_vals, 'r--', label=self._fit_label(), linewidth=2)
+
+            if center_pos is not None:
+                # Mark center at the interpolated fit value
+                y_at_center = np.interp(center_pos, pos_fine, fitted_vals)
+                ax.axvline(center_pos, color='g', linestyle=':', linewidth=1.5)
+                ax.plot(center_pos, y_at_center, 'g*', markersize=15, label="Center")
+
+        ax.legend()
+        ax.grid(True, alpha=0.2)
+        canvas.draw_idle()
+
     def _update_horizontal_plot(self):
         """Update the horizontal scan plot."""
         if self._horizontal_data is None:
             return
-            
         center_pos, trace_pos, trace_vals, fitted_vals = self._horizontal_data
-        
-        self.ax_top.clear()
-        self.ax_top.set_title(f"Horizontal Scan - Center: {center_pos:.4f}" if center_pos else "Horizontal Scan")
-        self.ax_top.set_xlabel("Galvo X")
-        self.ax_top.set_ylabel("Lock-in X")
-        
-        # Plot measured data
-        if len(trace_pos) > 0 and len(trace_vals) > 0:
-            self.ax_top.plot(trace_pos, trace_vals, 'o-', label="Measured", alpha=0.7)
-        
-        # Plot fitted curve
-        if len(fitted_vals) > 0 and not np.all(np.isnan(fitted_vals)):
-            pos_fine = np.linspace(np.min(trace_pos), np.max(trace_pos), len(fitted_vals))
-            self.ax_top.plot(pos_fine, fitted_vals, 'r--', label="Sigmoid fit", linewidth=2)
-            
-            # Mark center position
-            if center_pos is not None:
-                y_at_center = sigmoid(center_pos, center_pos, 0.01, np.min(fitted_vals), np.max(fitted_vals) - np.min(fitted_vals))
-                self.ax_top.plot(center_pos, y_at_center, 'g*', markersize=15, label="Center")
-        
-        self.ax_top.legend()
-        self.ax_top.grid(True, alpha=0.2)
-        self.canvas_top.draw_idle()
-    
+        self._plot_scan(self.ax_top, self.canvas_top, "Galvo X", "Horizontal Scan",
+                        center_pos, trace_pos, trace_vals, fitted_vals)
+
     def _update_vertical_plot(self):
         """Update the vertical scan plot."""
         if self._vertical_data is None:
             return
-            
         center_pos, trace_pos, trace_vals, fitted_vals = self._vertical_data
-        
-        self.ax_bottom.clear()
-        self.ax_bottom.set_title(f"Vertical Scan - Center: {center_pos:.4f}" if center_pos else "Vertical Scan")
-        self.ax_bottom.set_xlabel("Galvo Y")
-        self.ax_bottom.set_ylabel("Lock-in X")
-        
-        # Plot measured data
-        if len(trace_pos) > 0 and len(trace_vals) > 0:
-            self.ax_bottom.plot(trace_pos, trace_vals, 'o-', label="Measured", alpha=0.7)
-        
-        # Plot fitted curve
-        if len(fitted_vals) > 0 and not np.all(np.isnan(fitted_vals)):
-            pos_fine = np.linspace(np.min(trace_pos), np.max(trace_pos), len(fitted_vals))
-            self.ax_bottom.plot(pos_fine, fitted_vals, 'r--', label="Sigmoid fit", linewidth=2)
-            
-            # Mark center position
-            if center_pos is not None:
-                y_at_center = sigmoid(center_pos, center_pos, 0.01, np.min(fitted_vals), np.max(fitted_vals) - np.min(fitted_vals))
-                self.ax_bottom.plot(center_pos, y_at_center, 'g*', markersize=15, label="Center")
-        
-        self.ax_bottom.legend()
-        self.ax_bottom.grid(True, alpha=0.2)
-        self.canvas_bottom.draw_idle()
+        self._plot_scan(self.ax_bottom, self.canvas_bottom, "Galvo Y", "Vertical Scan",
+                        center_pos, trace_pos, trace_vals, fitted_vals)
     
     def _on_finished(self, user_abort: bool, message: str, update_original: bool):
         """Finalize when scan completes."""

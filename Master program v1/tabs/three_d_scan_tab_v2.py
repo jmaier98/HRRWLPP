@@ -52,6 +52,7 @@ class _Scan3DWorker(QThread):
         align_enabled: bool = False,
         alignment_tab=None,
         z_reset_s: float = 0.0,
+        align_every_n: int = 46,
     ):
         super().__init__()
         self._zs = np.asarray(zs, float)
@@ -72,6 +73,7 @@ class _Scan3DWorker(QThread):
             self._fast = 'Y'
         self._align_enabled = align_enabled
         self._alignment_tab = alignment_tab
+        self._align_every_n = max(1, int(align_every_n))
         self.x_offset = 0.0
         self.y_offset = 0.0
 
@@ -96,9 +98,9 @@ class _Scan3DWorker(QThread):
 
     def _run_alignment(self, z: float):
         """Run alignment and update offsets (shared by both scan modes)."""
-        self._alignment_tab._find_feature()
         print("aligning")
-        time.sleep(15)
+        self._alignment_tab._find_feature()
+        time.sleep(1)
         self.x_offset = self._alignment_tab.state.settings.get("x_offset", math.nan)
         self.y_offset = self._alignment_tab.state.settings.get("y_offset", math.nan)
         print(f"Alignment offsets at z={z}: x_offset={self.x_offset}, y_offset={self.y_offset}")
@@ -134,6 +136,8 @@ class _Scan3DWorker(QThread):
     # Original XY-fast scan (Z is outer loop)
     # ------------------------------------------------------------------
     def _run_xy_fast(self):
+        total_xy = len(self._xs) * len(self._ys)
+
         for s, z in enumerate(self._zs):
             try:
                 self._set_z(float(z))
@@ -141,20 +145,33 @@ class _Scan3DWorker(QThread):
                 self.finished.emit(True, f'Z axis move error at z={z}: {e}')
                 return
 
-            if self._align_enabled and self._alignment_tab is not None:
-                self._run_alignment(z)
-
             first_in_layer = True
+            pixel_count = 0
             for ix, iy, x, y in self._iter_xy_coords():
                 if self._stop_flag_ref[0]:
                     self.finished.emit(True, 'Scan stopped by user.')
                     return
 
+                # Small settle move on the very first point of each layer
                 try:
                     if first_in_layer:
                         self._set_xy(float(x), float(y + 0.05))
                         time.sleep(0.05)
                         first_in_layer = False
+                except Exception as e:
+                    self.finished.emit(True, f'Axis move error at (x={x}, y={y}): {e}')
+                    return
+
+                # Align every N pixels (if N >= total_xy, only fires once at pixel 0)
+                if self._align_enabled and self._alignment_tab is not None:
+                    if pixel_count % self._align_every_n == 0:
+                        try:
+                            self._run_alignment(z)
+                        except Exception as e:
+                            self.finished.emit(True, f'Alignment error at (x={x}, y={y}): {e}')
+                            return
+
+                try:
                     self._set_xy(float(x + self.x_offset), float(y + self.y_offset))
                 except Exception as e:
                     self.finished.emit(True, f'Axis move error at (x={x}, y={y}): {e}')
@@ -168,6 +185,7 @@ class _Scan3DWorker(QThread):
                     return
 
                 self.progress.emit(int(s), int(ix), int(iy), float(z), float(x), float(y), d6)
+                pixel_count += 1
 
             self.scan_done.emit(s + 1)
 
@@ -194,7 +212,7 @@ class _Scan3DWorker(QThread):
 
             # Move to (x, y) – small settle move first on the very first point
             try:
-                if xy_count%46 == 0 and self._align_enabled and self._alignment_tab is not None:
+                if xy_count % self._align_every_n == 0 and self._align_enabled and self._alignment_tab is not None:
                     self._run_alignment(float(xy_count))  # align at the first Z value
             except Exception as e:
                 self.finished.emit(True, f'Alignment error at (x={x}, y={y}): {e}')
@@ -397,6 +415,7 @@ class ThreeDScanTab(QWidget):
         self.align_checkbox = QCheckBox('Align between each scan')
         self.align_checkbox.setChecked(False)
         form.addRow('', self.align_checkbox)
+        self.align_every_n = QLineEdit('46'); self.align_every_n.setValidator(QIntValidator(1, 1_000_000, self))
         # Save controls
         self.folder = QLineEdit(os.path.expanduser('~/two_d_scans'))
         self.filename = QLineEdit('scan_2d')
@@ -432,6 +451,7 @@ class ThreeDScanTab(QWidget):
         form.addRow('Display channel:', self.display_combo)
         form.addRow('Wait (ms):', self.wait_ms)
         form.addRow('Z reset wait (ms):', self.z_reset_ms)
+        form.addRow('Align every N pixels:', self.align_every_n)
 
         save_row = QGridLayout()
         save_row.addWidget(QLabel('Folder:'), 0, 0)
@@ -625,6 +645,7 @@ class ThreeDScanTab(QWidget):
             align_enabled=self.align_checkbox.isChecked(),
             alignment_tab=self.alignment_tab,
             z_reset_s=max(0.0, int(self.z_reset_ms.text() or '0') / 1000.0),
+            align_every_n=max(1, int(self.align_every_n.text() or '46')),
         )
         self._worker.progress.connect(self._on_progress, Qt.ConnectionType.QueuedConnection)
         self._worker.scan_done.connect(self._on_scan_done, Qt.ConnectionType.QueuedConnection)
