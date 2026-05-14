@@ -5,7 +5,8 @@ import numpy as np
 
 from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QPushButton,
-    QLabel, QSlider, QMessageBox, QLineEdit 
+    QLabel, QSlider, QMessageBox, QLineEdit,
+    QGroupBox, QGridLayout, QRadioButton, QButtonGroup
 )
 from PyQt6.QtCore import (
     QTimer, Qt, QObject, QThread, pyqtSignal, QPoint
@@ -16,6 +17,13 @@ DEADZONE  = 0.15
 SCALE_XY  = 2.0
 SCALE_Z   = 0.15
 SCALE_GALVO = 0.001
+
+# Jog step sizes: [rough, medium, fine] in mm
+JOG_STEPS_XY = [1.0,   0.1,   0.01]
+JOG_STEPS_Z  = [0.1,   0.01,  0.001]
+# Feedrates in mm/min for each step size
+JOG_FEEDS_XY = [1200,  300,   60]
+JOG_FEEDS_Z  = [120,   30,    10]
 
 
 def move_big_motors_from_controller(BTT, galvo, joystick, state):
@@ -183,6 +191,7 @@ class WebcamTab(QWidget):
         self.shutter = self.IM.get("Shutter")
         self.stage = self.IM.get("ESP")
         self.galvo = self.IM.get("Galvo")
+        self.btt = self.IM.get("BTT")
         self.state = state
         self.cap      = None
         self.timer    = QTimer()
@@ -255,7 +264,63 @@ class WebcamTab(QWidget):
         spd_row.addWidget(self.stage_speed_set_btn)
         ctrl.addLayout(spd_row)
         # --------------------------------------------------------------------
-        
+
+        # --- Cryo XYZ Jog Controls ------------------------------------------
+        jog_group = QGroupBox("Cryo Stage Jog")
+        jog_layout = QVBoxLayout(jog_group)
+
+        # Step size selector
+        step_row = QHBoxLayout()
+        step_row.addWidget(QLabel("Step:"))
+        self._step_btn_group = QButtonGroup(self)
+        for i, (label, xy, z) in enumerate([
+            ("Rough\n1mm / 0.1mm",   JOG_STEPS_XY[0], JOG_STEPS_Z[0]),
+            ("Medium\n0.1mm / 0.01mm", JOG_STEPS_XY[1], JOG_STEPS_Z[1]),
+            ("Fine\n0.01mm / 0.001mm", JOG_STEPS_XY[2], JOG_STEPS_Z[2]),
+        ]):
+            rb = QRadioButton(label)
+            rb.setChecked(i == 1)  # default: medium
+            self._step_btn_group.addButton(rb, i)
+            step_row.addWidget(rb)
+        jog_layout.addLayout(step_row)
+
+        # XY D-pad
+        xy_pad = QGridLayout()
+        xy_pad.setSpacing(2)
+        btn_yp = QPushButton("Y+")
+        btn_ym = QPushButton("Y-")
+        btn_xm = QPushButton("X-")
+        btn_xp = QPushButton("X+")
+        for btn in (btn_yp, btn_ym, btn_xm, btn_xp):
+            btn.setFixedSize(52, 36)
+        xy_pad.addWidget(btn_yp, 0, 1)
+        xy_pad.addWidget(btn_xm, 1, 0)
+        xy_pad.addWidget(btn_xp, 1, 2)
+        xy_pad.addWidget(btn_ym, 2, 1)
+        btn_yp.clicked.connect(lambda: self._jog_xy(0,  1))
+        btn_ym.clicked.connect(lambda: self._jog_xy(0, -1))
+        btn_xm.clicked.connect(lambda: self._jog_xy(-1, 0))
+        btn_xp.clicked.connect(lambda: self._jog_xy( 1, 0))
+        jog_layout.addLayout(xy_pad)
+
+        # Z buttons
+        z_row = QHBoxLayout()
+        btn_zp = QPushButton("Z+")
+        btn_zm = QPushButton("Z-")
+        btn_zp.setFixedSize(52, 36)
+        btn_zm.setFixedSize(52, 36)
+        btn_zp.clicked.connect(lambda: self._jog_z( 1))
+        btn_zm.clicked.connect(lambda: self._jog_z(-1))
+        z_row.addStretch()
+        z_row.addWidget(QLabel("Z:"))
+        z_row.addWidget(btn_zp)
+        z_row.addWidget(btn_zm)
+        z_row.addStretch()
+        jog_layout.addLayout(z_row)
+
+        ctrl.addWidget(jog_group)
+        # --------------------------------------------------------------------
+
         # Shutter control buttons
         self.open_pump_btn = QPushButton("Open Pump Shutter")
         self.open_pump_btn.clicked.connect(self.shutter.openPump)
@@ -308,10 +373,12 @@ class WebcamTab(QWidget):
             return
 
         try:
-            # Replace move_xy with whatever your galvo API uses:
             self.galvo.move(x, y)
+            # Save to state so the 2D scan worker can read it for alignment return
+            self.state.settings['galvo_x_position'] = x
+            self.state.settings['galvo_y_position'] = y
         except Exception as e:
-            QMessageBox.warning(self, "Galvo Error", f"Couldn’t move galvo:\n{e}")
+            QMessageBox.warning(self, "Galvo Error", f"Couldn't move galvo:\n{e}")
         
     def start_all(self):
         # 1) camera
@@ -353,7 +420,7 @@ class WebcamTab(QWidget):
         try:
             self.shutter.setLED(val)
         except Exception as e:
-            QMessageBox.warning(self, "LED Error", f"Couldn’t set brightness:\n{e}")
+            QMessageBox.warning(self, "LED Error", f"Couldn't set brightness:\n{e}")
 
     def _update_frame(self):
         if not self.cap:
@@ -369,6 +436,21 @@ class WebcamTab(QWidget):
         qimg = QImage(frame.data, w, h, bytes_per_line,
                       QImage.Format.Format_RGB888)
         self.video_label.setPixmap(QPixmap.fromImage(qimg))
+
+    def _jog_xy(self, dx_sign, dy_sign):
+        idx = self._step_btn_group.checkedId()
+        step = JOG_STEPS_XY[idx]
+        feed = JOG_FEEDS_XY[idx]
+        dx = round(dx_sign * step, 4)
+        dy = round(dy_sign * step, 4)
+        self.btt.cryoXY(dx, dy, feed)
+
+    def _jog_z(self, dz_sign):
+        idx = self._step_btn_group.checkedId()
+        step = JOG_STEPS_Z[idx]
+        feed = JOG_FEEDS_Z[idx]
+        dz = round(dz_sign * step, 4)
+        self.btt.cryoZ(dz, feed)
 
     def _on_motor_error(self, msg):
         QMessageBox.critical(self, "Motor Error", msg)

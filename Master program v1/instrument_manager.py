@@ -16,7 +16,10 @@ class InstrumentManager:
         self._instruments['Galvo'] = Galvo_D2XX.GALVO()
         self._instruments['Picoscope'] = Picoscope.Picoscope()
         self._instruments['Keithley2400'] = Keithley2400.Keithley2400()
-        self._instruments['SP2500'] = SP2500.SP2500()
+        try:
+            self._instruments['SP2500'] = SP2500.SP2500()
+        except Exception:
+            self._instruments['SP2500'] = None
         self._instruments['Lakeshore331'] = Lakeshore331.LakeShore331()
         # …etc.
 
@@ -26,4 +29,5 @@ class InstrumentManager:
     def close_all(self):
         print("closing instruments")
         for inst in self._instruments.values():
-            inst.close()
+            if inst is not None:
+                inst.close()

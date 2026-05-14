@@ -21,6 +21,7 @@ from tabs.three_d_scan_tab_v2 import ThreeDScanTab
 from tabs.temperature_control_tab import TemperatureControlTab
 from tabs.find_focus_tab import FindFocusTab
 from tabs.alignment_tab import AlignmentTab
+from tabs.live_lockin_tab import LiveLockinTab
 
 class MainWindow(QMainWindow):
     def __init__(self,instrument_manager, state):
@@ -39,7 +40,7 @@ class MainWindow(QMainWindow):
         alignment_tab = AlignmentTab(instrument_manager, state)
         tabs.addTab(alignment_tab, "Alignment")
         tabs.addTab(OneDScanTab(instrument_manager, state, alignment_tab), "1D Scan")
-        tabs.addTab(TwoDScanTab(instrument_manager, state), "2D Scan")
+        tabs.addTab(TwoDScanTab(instrument_manager, state, alignment_tab), "2D Scan")
         tabs.addTab(ThreeDScanTab(instrument_manager, state, alignment_tab), "3D Scan")
         tabs.addTab(PowerMeterTab(instrument_manager, state), "Power Meter")
         tabs.addTab(ImagingTab(instrument_manager, state), "Imaging")
@@ -49,6 +50,7 @@ class MainWindow(QMainWindow):
         tabs.addTab(IVCurveTab(instrument_manager, state), "IV Curve")
         tabs.addTab(FourMapScanTab(instrument_manager, state), "Four Map Scan")
         tabs.addTab(TemperatureControlTab(instrument_manager, state), "Temperature")
+        tabs.addTab(LiveLockinTab(instrument_manager, state), "Resistance")
         
         
         
@@ -67,6 +69,8 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     w   = MainWindow(instrument_manager, state)
     w.show()
+    w.raise_()
+    w.activateWindow()
     app.aboutToQuit.connect(instrument_manager.close_all)
     app.aboutToQuit.connect(state.save)
     sys.exit(app.exec())

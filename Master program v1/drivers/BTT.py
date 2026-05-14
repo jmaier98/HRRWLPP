@@ -1,8 +1,9 @@
 import serial
 import time
-PELLICLE = 60
-EMPTY = 20
-POWERMETER = 90
+PELLICLE = 33
+EMPTY = 0
+POWERMETER = 65
+RAIL_2_CLEAR = 85
 ROTATION_MOUNT = 3.6
 class BTT:
     def __init__(self, state):
@@ -61,10 +62,16 @@ class BTT:
         self.send_gcode(2, f'G0 X{PELLICLE} Y{0} F{3000}')
 
     def clear(self):
-        self.send_gcode(2, f'G0 X{EMPTY} Y{PELLICLE} F{3000}')
+        self.send_gcode(2, f'G0 X{EMPTY} Y{0} F{3000}')
 
     def powermeter(self):
-        self.send_gcode(2, f'G0 X{POWERMETER} Y{PELLICLE} F{3000}')
+        self.send_gcode(2, f'G0 X{POWERMETER} Y{0} F{3000}')
+
+    def rail_1(self, pos, feedrate=3000):
+        self.send_gcode(2, f'G0 X{pos:.3f} F{feedrate}')
+
+    def rail_2(self, pos, feedrate=3000):
+        self.send_gcode(2, f'G0 Y{pos:.3f} F{feedrate}')
 
     def homeRails(self):
         self.send_gcode(2, 'G28 X')
@@ -77,12 +84,16 @@ class BTT:
         self.send_gcode(3, 'G28 Y')
 
     def home_rot3(self):
-         self.send_gcode(3, 'G28 Z')
+        self.send_gcode(3, 'G28 Z')
+
+    def home_rot4(self):
+        self.send_gcode(3, 'G28 E')
 
     def home_all_rot(self):
         self.home_rot1()
         self.home_rot2()
         self.home_rot3()
+        self.home_rot4()
         
     def rot_1(self, angle_x, feedrate):
         self.state.settings["pump_polarizer_angle"] = angle_x

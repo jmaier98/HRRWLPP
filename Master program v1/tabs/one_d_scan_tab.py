@@ -12,6 +12,7 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import math
 import numpy as np
+from helpers.power_tuners import tune_pump_power_blocking, tune_probe_power_blocking, set_fast_probe_power_blocking
 
 
 # --------------------------- Worker ---------------------------------- #
@@ -135,6 +136,9 @@ class OneDScanTab(QWidget):
         # Try to fetch common instruments (optional; only needed by defaults)
         self.galvo = None
         self.lockin = None
+        self.BTT = None
+        self.PM = None
+        self.shutter = None
         try:
             self.galvo = self.IM.get("Galvo")
         except Exception:
@@ -142,7 +146,18 @@ class OneDScanTab(QWidget):
         try:
             self.lockin = self.IM.get("SR830")
             self.stage  = self.IM.get("ESP")
+        except Exception:
+            pass
+        try:
             self.BTT = self.IM.get("BTT")
+        except Exception:
+            pass
+        try:
+            self.PM = self.IM.get("PM")
+        except Exception:
+            pass
+        try:
+            self.shutter = self.IM.get("Shutter")
         except Exception:
             pass
         # --- Keithley 2400 safe-voltage axis (≤ 50 mV ramp sub-steps) ---
@@ -159,7 +174,19 @@ class OneDScanTab(QWidget):
         self.AXIS_SETTERS["Newport Stage ps"] = lambda x: self.stage.move_and_wait_ps(float(x))
         self.AXIS_SETTERS["Galvo X "] = lambda x: self.galvo.movexy(float(x), 0.5)
         self.AXIS_SETTERS["Keithley V "] = lambda x: k2400.ramp_voltage(float(x))
-        self.AXIS_SETTERS["Pump Waveplate"] = lambda x: self.BTT.rot_3(float(x),5000)
+        self.AXIS_SETTERS["Pump Waveplate"] = lambda x: self.BTT.rot_3(float(x), 5000)
+
+        if self.BTT is not None and self.PM is not None and self.shutter is not None:
+            self.AXIS_SETTERS["Pump Power (µW)"] = lambda x: tune_pump_power_blocking(
+                float(x), self.PM, self.BTT, self.shutter, self.state
+            )
+            self.AXIS_SETTERS["Probe Power (µW)"] = lambda x: tune_probe_power_blocking(
+                float(x), self.PM, self.BTT, self.shutter, self.state
+            )
+        if self.BTT is not None:
+            self.AXIS_SETTERS["Fast Probe Power (µW)"] = lambda x: set_fast_probe_power_blocking(
+                float(x), self.BTT, self.state
+            )
         
 
         # Placeholder example for a voltage source (uncomment and adapt):
@@ -540,19 +567,34 @@ class OneDScanTab(QWidget):
             QMessageBox.critical(self, "Folder error", f"Could not create folder:\n{e}")
             return
 
-        arr = np.asarray(self._data_rows, dtype=float)
-        path = os.path.join(folder, f"{fname}.txt")
-
-        header = self._build_header()
+        # ---- 1) Save PNG of both plots ----
+        png_traces = os.path.join(folder, f"{fname}_traces.png")
+        png_avg    = os.path.join(folder, f"{fname}_average.png")
         try:
-            np.savetxt(path, arr, delimiter="\t", fmt="%.10g", header=header, comments="")
+            self.fig_top.savefig(png_traces, dpi=200, bbox_inches="tight")
+        except Exception as e:
+            QMessageBox.critical(self, "Save error", f"Failed to save traces PNG:\n{e}")
+            return
+        try:
+            self.fig_bot.savefig(png_avg, dpi=200, bbox_inches="tight")
+        except Exception as e:
+            QMessageBox.critical(self, "Save error", f"Failed to save average PNG:\n{e}")
+            return
+
+        # ---- 2) Save TXT data ----
+        arr = np.asarray(self._data_rows, dtype=float)
+        txt_path = os.path.join(folder, f"{fname}.txt")
+        header = self._build_header(png_traces, png_avg)
+        try:
+            np.savetxt(txt_path, arr, delimiter="\t", fmt="%.10g", header=header, comments="")
         except Exception as e:
             QMessageBox.critical(self, "Save error", f"Failed to save TXT:\n{e}")
             return
 
-        QMessageBox.information(self, "Saved", f"Saved data to:\n{path}")
+        QMessageBox.information(self, "Saved",
+            f"Saved:\n{txt_path}\n{png_traces}\n{png_avg}")
 
-    def _build_header(self) -> str:
+    def _build_header(self, png_traces: str = "", png_avg: str = "") -> str:
         xs_str = "None" if self._xs is None else f"{self._xs[0]} … {self._xs[-1]} (N={len(self._xs)})"
         lines = [
             "1D Scan",
@@ -567,6 +609,12 @@ class OneDScanTab(QWidget):
             f"  X step:  {self.x_step.text()}",
             f"  Wait (ms): {self.wait_ms.text()}",
             f"  # of averages (scans): {self.n_avg.text()}",
+        ]
+        if png_traces:
+            lines.append(f"  Traces screenshot: {os.path.basename(png_traces)}")
+        if png_avg:
+            lines.append(f"  Average screenshot: {os.path.basename(png_avg)}")
+        lines += [
             "",
             "Data format (8 columns):",
             "  [scan_index, x_value, data1, data2, data3, data4, data5, data6]",

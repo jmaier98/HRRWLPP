@@ -12,8 +12,12 @@ class SP2500:
         """
         Initialize the serial connection to the spectrometer.
         """
-        self.ser = serial.Serial(port, baudrate, timeout=timeout)
-        time.sleep(2)  # Allow time for the connection to establish
+        try:
+            self.ser = serial.Serial(port, baudrate, timeout=timeout)
+            time.sleep(2)  # Allow time for the connection to establish
+        except Exception as e:
+            print("\033[31m" + "SP2500 offline" + "\033[0m")
+            self.ser = None
         self.lock = threading.Lock()
 
     def send_command(self, command, wait=0.5, read_bytes=100):
@@ -143,7 +147,8 @@ class SP2500:
         """
         Close the serial connection.
         """
-        self.ser.close()
+        if self.ser is not None:
+            self.ser.close()
 
 
 # Example usage:

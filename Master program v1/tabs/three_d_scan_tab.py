@@ -13,6 +13,7 @@ from PyQt6.QtGui import QDoubleValidator, QIntValidator
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from mpl_toolkits.axes_grid1 import make_axes_locatable
+from helpers.power_tuners import tune_pump_power_blocking, tune_probe_power_blocking
 
 
 # =============================== Worker =============================== #
@@ -90,7 +91,7 @@ class _Scan3DWorker(QThread):
                     self.x_offset = self._alignment_tab.state.settings.get("x_offset", math.nan)
                     self.y_offset = self._alignment_tab.state.settings.get("y_offset", math.nan)
                     print(f"Alignment offsets at z={z}: x_offset={self.x_offset}, y_offset={self.y_offset}")
-                    if abs(self.x_offset)>2e-2 or abs(self.y_offset)>2e-2:
+                    if abs(self.x_offset)>4e-2 or abs(self.y_offset)>4e-2:
                         self.x_offset = 0
                         self.y_offset = 0
                         print(f"Warning: large alignment offset at z={z}: x_offset={self.x_offset}, y_offset={self.y_offset}. Offsets ignored.")
@@ -154,6 +155,8 @@ class ThreeDScanTab(QWidget):
         self.lockin = self._try_get('SR830')
         self.k2400 = self._try_get('Keithley2400')
         self.BTT = self._try_get('BTT')
+        self.PM = self._try_get('PM')
+        self.shutter = self._try_get('Shutter')
 
         # ---------------- Registry: Axis setters and measurement ---------------- #
         self.AXIS_Z_SETTERS: Dict[str, Callable[[float], None]] = {}
@@ -183,6 +186,28 @@ class ThreeDScanTab(QWidget):
 
         if self.BTT is not None:
             self.AXIS_Z_SETTERS['Pump Half Wave Plate'] = lambda z: self.BTT.rot_3(float(z), 5000)
+            self.AXIS_X_SETTERS['Pump Half Wave Plate'] = lambda x: self.BTT.rot_3(float(x), 5000)
+            self.AXIS_Y_SETTERS['Pump Half Wave Plate'] = lambda y: self.BTT.rot_3(float(y), 5000)
+
+        if self.BTT is not None and self.PM is not None and self.shutter is not None:
+            self.AXIS_Z_SETTERS['Pump Power (µW)'] = lambda z: tune_pump_power_blocking(
+                float(z), self.PM, self.BTT, self.shutter, self.state
+            )
+            self.AXIS_Z_SETTERS['Probe Power (µW)'] = lambda z: tune_probe_power_blocking(
+                float(z), self.PM, self.BTT, self.shutter, self.state
+            )
+            self.AXIS_X_SETTERS['Pump Power (µW)'] = lambda x: tune_pump_power_blocking(
+                float(x), self.PM, self.BTT, self.shutter, self.state
+            )
+            self.AXIS_X_SETTERS['Probe Power (µW)'] = lambda x: tune_probe_power_blocking(
+                float(x), self.PM, self.BTT, self.shutter, self.state
+            )
+            self.AXIS_Y_SETTERS['Pump Power (µW)'] = lambda y: tune_pump_power_blocking(
+                float(y), self.PM, self.BTT, self.shutter, self.state
+            )
+            self.AXIS_Y_SETTERS['Probe Power (µW)'] = lambda y: tune_probe_power_blocking(
+                float(y), self.PM, self.BTT, self.shutter, self.state
+            )
 
         self.MEASUREMENT_FUNCS: Dict[str, Callable[[], Tuple[float, ...]]] = {}
 

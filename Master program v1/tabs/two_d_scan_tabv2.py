@@ -13,6 +13,7 @@ from PyQt6.QtGui import QDoubleValidator, QIntValidator
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from mpl_toolkits.axes_grid1 import make_axes_locatable
+from helpers.power_tuners import tune_pump_power_blocking, tune_probe_power_blocking, set_fast_probe_power_blocking
 
 
 # =============================== Worker =============================== #
@@ -43,6 +44,12 @@ class _Scan2DWorker(QThread):
         stop_flag_ref: List[bool],
         fast_axis: str,  # 'X' or 'Y'
         n_scans: int = 1,
+        align_enabled: bool = False,
+        alignment_tab=None,
+        align_every_n: int = 1_000_000,
+        galvo_scan: bool = True,
+        state=None,
+        galvo_ref=None,
     ):
         super().__init__()
         self._xs = np.asarray(xs, float)
@@ -53,6 +60,43 @@ class _Scan2DWorker(QThread):
         self._stop_flag_ref = stop_flag_ref
         self._fast = 'X' if str(fast_axis).upper().startswith('X') else 'Y'
         self._n_scans = max(1, int(n_scans))
+        self._align_enabled = align_enabled
+        self._alignment_tab = alignment_tab
+        self._align_every_n = max(1, int(align_every_n))
+        self._galvo_scan = galvo_scan
+        self._state = state
+        self._galvo_ref = galvo_ref
+        self.x_offset = 0.0
+        self.y_offset = 0.0
+
+    def _run_alignment(self, target_x: float, target_y: float):
+        """Run alignment, update x/y offsets, then return to target scan position."""
+        print("aligning")
+        self._alignment_tab._find_feature()
+        time.sleep(1)
+        self.x_offset = self._alignment_tab.state.settings.get("x_offset", math.nan)
+        self.y_offset = self._alignment_tab.state.settings.get("y_offset", math.nan)
+        print(f"Alignment offsets: x_offset={self.x_offset}, y_offset={self.y_offset}")
+        if abs(self.x_offset) > 4e-2 or abs(self.y_offset) > 4e-2:
+            self.x_offset = 0.0
+            self.y_offset = 0.0
+            print("Warning: large alignment offset. Offsets ignored.")
+
+        if self._galvo_scan:
+            # Scan axes ARE galvo — return galvo to this pixel's position + drift offset
+            self._set_xy(float(target_x + self.x_offset), float(target_y + self.y_offset))
+            print(f"Returned galvo to scan position: ({target_x + self.x_offset:.6g}, {target_y + self.y_offset:.6g})")
+        else:
+            # Scan axes are NOT galvo (e.g. power, waveplate) — move galvo back to the
+            # fixed position that was last sent from the webcam tab, plus the drift offset.
+            if self._galvo_ref is not None and self._state is not None:
+                gx = self._state.settings.get('galvo_x_position', 0.0)
+                gy = self._state.settings.get('galvo_y_position', 0.0)
+                self._galvo_ref.move(float(gx + self.x_offset), float(gy + self.y_offset))
+                print(f"Returned galvo to fixed position + offset: ({gx + self.x_offset:.6g}, {gy + self.y_offset:.6g})")
+            # Return scan axes to target pixel — offsets don't apply to non-galvo axes
+            self._set_xy(float(target_x), float(target_y))
+            print(f"Restored scan axes to: ({target_x:.6g}, {target_y:.6g})")
 
     def _iter_coords(self):
         # Iterate without serpentine; simple raster with chosen fast axis
@@ -68,13 +112,27 @@ class _Scan2DWorker(QThread):
     def run(self):
         try:
             for s in range(1, self._n_scans + 1):
+                pixel_count = 0
                 for ix, iy, x, y in self._iter_coords():
                     if self._stop_flag_ref[0]:
                         self.finished.emit(True, 'Scan stopped by user.')
                         return
 
+                    if self._align_enabled and self._alignment_tab is not None:
+                        if pixel_count % self._align_every_n == 0:
+                            try:
+                                self._run_alignment(x, y)
+                            except Exception as e:
+                                self.finished.emit(True, f'Alignment error: {e}')
+                                return
+
                     try:
-                        self._set_xy(float(x), float(y))
+                        if self._galvo_scan:
+                            # Apply drift offsets to galvo scan coordinates
+                            self._set_xy(float(x + self.x_offset), float(y + self.y_offset))
+                        else:
+                            # Non-galvo axes (power, waveplate, etc.) — no offset applied
+                            self._set_xy(float(x), float(y))
                     except Exception as e:
                         self.finished.emit(True, f'Axis move error at (x={x}, y={y}): {e}')
                         return
@@ -93,6 +151,7 @@ class _Scan2DWorker(QThread):
                     d6 = tuple([float(v) for v in (list(d) + [math.nan]*6)[:6]])
 
                     self.progress.emit(int(ix), int(iy), float(x), float(y), d6)
+                    pixel_count += 1
 
                 self.scan_done.emit(s)
 
@@ -115,16 +174,20 @@ class TwoDScanTab(QWidget):
       - Live 2D image (imshow) updated as data arrives
       - Saves a per-point table and an average/current cube
     """
-    def __init__(self, instrument_manager, state=None):
+    def __init__(self, instrument_manager, state=None, alignment_tab=None):
         super().__init__()
         self.IM = instrument_manager
         self.state = state
+        self.alignment_tab = alignment_tab
 
         # Instruments (optional; only needed for defaults)
         self.galvo = self._try_get('Galvo')
         self.stage = self._try_get('ESP')
         self.lockin = self._try_get('SR830')
         self.k2400 = self._try_get('Keithley2400')
+        self.btt = self._try_get('BTT')
+        self.PM = self._try_get('PM')
+        self.shutter = self._try_get('Shutter')
 
         # ---------------- Registry: Axis setters and measurement ---------------- #
         self.AXIS_X_SETTERS: Dict[str, Callable[[float], None]] = {}
@@ -147,6 +210,31 @@ class TwoDScanTab(QWidget):
         if self.k2400 is not None:
             self.AXIS_X_SETTERS['Keithley V '] = lambda x: self.k2400.ramp_voltage(float(x))
             self.AXIS_Y_SETTERS['Keithley V '] = lambda y: self.k2400.ramp_voltage(float(y))
+
+        if self.btt is not None and self.PM is not None and self.shutter is not None:
+            self.AXIS_X_SETTERS['Pump Power (µW)'] = lambda x: tune_pump_power_blocking(
+                float(x), self.PM, self.btt, self.shutter, self.state
+            )
+            self.AXIS_X_SETTERS['Probe Power (µW)'] = lambda x: tune_probe_power_blocking(
+                float(x), self.PM, self.btt, self.shutter, self.state
+            )
+            self.AXIS_Y_SETTERS['Pump Power (µW)'] = lambda y: tune_pump_power_blocking(
+                float(y), self.PM, self.btt, self.shutter, self.state
+            )
+            self.AXIS_Y_SETTERS['Probe Power (µW)'] = lambda y: tune_probe_power_blocking(
+                float(y), self.PM, self.btt, self.shutter, self.state
+            )
+        if self.btt is not None:
+            self.AXIS_X_SETTERS['Fast Probe Power (µW)'] = lambda x: set_fast_probe_power_blocking(
+                float(x), self.btt, self.state
+            )
+            self.AXIS_Y_SETTERS['Fast Probe Power (µW)'] = lambda y: set_fast_probe_power_blocking(
+                float(y), self.btt, self.state
+            )
+
+        if self.btt is not None:
+            self.AXIS_X_SETTERS['Pump Half Wave Plate'] = lambda x: self.btt.rot_3(float(x), 5000)
+            self.AXIS_Y_SETTERS['Pump Half Wave Plate'] = lambda y: self.btt.rot_3(float(y), 5000)
 
         self.MEASUREMENT_FUNCS: Dict[str, Callable[[], Tuple[float, ...]]] = {}
 
@@ -190,7 +278,12 @@ class TwoDScanTab(QWidget):
             def _CD_with_R():
                 x_ch,a_ch = self.lockin.readX_A()
                 return (x_ch, a_ch, _safe_div(x_ch, a_ch), math.nan, math.nan, math.nan)
+            def _double_pc():
+                Vx1, Vy1, PC  = self.lockin.read_xy()
+                Vx2, Vy2, PC2 = self.lockin.read_xy2()
+                return (Vx1, Vy1, Vx2, Vy2, PC, math.nan)
             self.MEASUREMENT_FUNCS['PC and reflect (both channels)'] = _photocurrent_readxy
+            self.MEASUREMENT_FUNCS['Double PC (X,Y of both)'] = _double_pc
             self.MEASUREMENT_FUNCS['R (calc), I, V'] = _photocurrent_R_read
             self.MEASUREMENT_FUNCS['X, A, X/A (calc)'] = _CD_with_R
 
@@ -236,6 +329,15 @@ class TwoDScanTab(QWidget):
         self.show_avg_chk = QCheckBox('Show average')
         self.show_avg_chk.setChecked(False)
 
+        # Galvo drift correction
+        self.set_galvo_every_line = QCheckBox('Set galvo every line')
+
+        # Alignment (mirrors 3D scan tab)
+        self.align_checkbox = QCheckBox('Align between each scan')
+        self.align_checkbox.setChecked(False)
+        self.align_every_n = QLineEdit('46')
+        self.align_every_n.setValidator(QIntValidator(1, 1_000_000, self))
+
         # Save controls
         self.folder = QLineEdit(os.path.expanduser('~/two_d_scans'))
         self.filename = QLineEdit('scan_2d')
@@ -267,6 +369,9 @@ class TwoDScanTab(QWidget):
         form.addRow('Wait (ms):', self.wait_ms)
         form.addRow('Averages:', self.n_scans)
         form.addRow('', self.show_avg_chk)
+        form.addRow('', self.set_galvo_every_line)
+        form.addRow('', self.align_checkbox)
+        form.addRow('Align every N pixels:', self.align_every_n)
 
         save_row = QGridLayout()
         save_row.addWidget(QLabel('Folder:'), 0, 0)
@@ -392,11 +497,43 @@ class TwoDScanTab(QWidget):
         if (set_x is None) or (set_y is None):
             QMessageBox.critical(self, 'Configuration error', 'X or Y setter not found.')
             return
+        # Capture UI state now (main thread) so the worker never touches Qt objects.
+        fast_is_x        = self.fast_axis_combo.currentText().startswith('X')
+        galvo_every_line = self.set_galvo_every_line.isChecked()
+        galvo_ref        = self.galvo   # None if not connected
+
+        # Track last-set values so a slow-axis setter is only called when its
+        # value actually changes (avoids re-running expensive tuners every pixel).
+        _last_xy = [float('nan'), float('nan')]   # [last_x, last_y]
+
         def _seq_xy(x: float, y: float, set_x=set_x, set_y=set_y):
-            if self.fast_axis_combo.currentText().startswith('X'):
-                set_y(float(y)); set_x(float(x))
+            x_new, y_new = float(x), float(y)
+            x_changed = (x_new != _last_xy[0])
+            y_changed = (y_new != _last_xy[1])
+            _last_xy[0] = x_new
+            _last_xy[1] = y_new
+
+            # Detect the start of a new line (slow axis just changed).
+            new_line = y_changed if fast_is_x else x_changed
+            if galvo_every_line and new_line and galvo_ref is not None:
+                gx = self.state.settings.get('galvo_x_position', 0.0)
+                gy = self.state.settings.get('galvo_y_position', 0.0)
+                try:
+                    galvo_ref.move(0.0, 0.0)   # bounce through origin to force re-engage
+                    galvo_ref.move(gx, gy)
+                except Exception:
+                    pass  # don't abort the scan if the galvo nudge fails
+
+            if fast_is_x:
+                if y_changed:
+                    set_y(y_new)
+                if x_changed:
+                    set_x(x_new)
             else:
-                set_x(float(x)); set_y(float(y))
+                if x_changed:
+                    set_x(x_new)
+                if y_changed:
+                    set_y(y_new)
 
         # Reset images/buffers
         Ny, Nx = len(ys), len(xs)
@@ -419,18 +556,23 @@ class TwoDScanTab(QWidget):
         if self._im_artist is None:
             # First time only: create the artist and colorbar
             self._im_artist = self.ax_img.imshow(img, origin='lower', extent=extent, aspect='auto')
-            self.ax_img.set_aspect('equal', 'box')
+            self.ax_img.set_aspect('auto')
             if self._cbar is None:
                 self._cbar = self.fig_img.colorbar(self._im_artist, cax=self._cax)
         else:
             # DO NOT clear axes here; just update the existing artist
             self._im_artist.set_data(img)
             self._im_artist.set_extent(extent)
-            self.ax_img.set_aspect('equal', 'box')
+            self.ax_img.set_aspect('auto')
             self._cbar.update_normal(self._im_artist)
 
         self._cbar.set_label(self.display_combo.currentText())
         self.canvas_img.draw_idle()
+
+        # Determine if both scan axes drive the galvo (affects alignment return logic)
+        x_setter_name = self.x_setter_combo.currentText()
+        y_setter_name = self.y_setter_combo.currentText()
+        galvo_scan = x_setter_name.startswith('Galvo') and y_setter_name.startswith('Galvo')
 
         # Start worker
         self._worker = _Scan2DWorker(
@@ -442,6 +584,12 @@ class TwoDScanTab(QWidget):
             stop_flag_ref=self._stop_flag,
             fast_axis=('X' if self.fast_axis_combo.currentText().startswith('X') else 'Y'),
             n_scans=n_scans,
+            align_enabled=self.align_checkbox.isChecked(),
+            alignment_tab=self.alignment_tab,
+            align_every_n=max(1, int(self.align_every_n.text() or '46')),
+            galvo_scan=galvo_scan,
+            state=self.state,
+            galvo_ref=self.galvo,
         )
         self._worker.progress.connect(self._on_progress, Qt.ConnectionType.QueuedConnection)
         self._worker.scan_done.connect(self._on_scan_done, Qt.ConnectionType.QueuedConnection)
@@ -532,14 +680,14 @@ class TwoDScanTab(QWidget):
         if self._im_artist is None:
             # First-time draw from a redraw path
             self._im_artist = self.ax_img.imshow(img, origin='lower', extent=extent, aspect='auto')
-            self.ax_img.set_aspect('equal', 'box')
+            self.ax_img.set_aspect('auto')
             if self._cbar is None:
                 self._cbar = self.fig_img.colorbar(self._im_artist, cax=self._cax)
         else:
             # Normal path: just update
             self._im_artist.set_data(img)
             self._im_artist.set_extent(extent)
-            self.ax_img.set_aspect('equal', 'box')
+            self.ax_img.set_aspect('auto')
             self._cbar.update_normal(self._im_artist)
 
         self._cbar.set_label(self.display_combo.currentText())
@@ -575,7 +723,7 @@ class TwoDScanTab(QWidget):
         xs = self._xs
         ys = self._ys
 
-        # We’ll include rows where at least one channel is finite
+        # We'll include rows where at least one channel is finite
         rows = []
         for s in range(n_scans):
             for iy in range(Ny):
@@ -617,6 +765,8 @@ class TwoDScanTab(QWidget):
             f'  Y step:  {self.y_step.text()}',
             f'  Wait (ms): {self.wait_ms.text()}',
             f'  Requested # of 2D scans: {self.n_scans.text()}',
+            f'  Alignment enabled: {self.align_checkbox.isChecked()}',
+            f'  Align every N pixels: {self.align_every_n.text()}',
             f'  Screenshot file: {os.path.basename(png_path)}',
             '',
             f'In-memory data shape: {data.shape}  (n_scans, Ny, Nx, 6)',
@@ -666,6 +816,8 @@ class TwoDScanTab(QWidget):
             f'  Wait (ms): {self.wait_ms.text()}',
             f'  # of 2D scans averaged: {self.n_scans.text()}',
             f'  View saved: {"Average" if (self._scan_count>0) else "Current"}',
+            f'  Alignment enabled: {self.align_checkbox.isChecked()}',
+            f'  Align every N pixels: {self.align_every_n.text()}',
             '',
             'Data format (10 columns):',
             '  [ix, iy, x, y, data1, data2, data3, data4, data5, data6]',

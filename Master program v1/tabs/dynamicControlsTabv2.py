@@ -4,11 +4,12 @@ from math import ceil
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QMainWindow,
     QLabel, QLineEdit, QPushButton,
-    QGridLayout, QHBoxLayout, QVBoxLayout, QGroupBox, QFormLayout, QScrollArea
+    QGridLayout, QHBoxLayout, QVBoxLayout, QGroupBox, QFormLayout, QScrollArea,
+    QSizePolicy
 )
 from PyQt6.QtCore import QThread, pyqtSignal, Qt
 from time import sleep
-from helpers.power_tuners import ProbeTuner, PumpTuner
+from helpers.power_tuners import ProbeTuner, PumpTuner, ProbeCalibrationScanner
 DEFAULT_FEEDRATE = 1000
 
 
@@ -31,6 +32,7 @@ class DynamicControlsTab(QWidget):
         except KeyError:
             raise RuntimeError("BTT controller not found in InstrumentManager")
         self._tuner_thread = None
+        self._cal_thread = None
         self.entry_labels = [
             'pump polarizer',
             'probe polarizer',
@@ -75,7 +77,8 @@ class DynamicControlsTab(QWidget):
             'home beamsplitter waveplate',
             'enable keithley output',
             'disable keithley output',
-            'set focus zero'
+            'set focus zero',
+            'build probe power table',
         ]
         self.entries = []
         self.go_buttons = []
@@ -160,12 +163,21 @@ class DynamicControlsTab(QWidget):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(content)
-        # Optional: control scrollbars
-        # scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.AsNeeded)
-        # scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.AsNeeded)
+
+        # --- Power tuner status bar (outside scroll area, always visible) ---
+        self._tuner_status = QLabel("Power tuner: idle")
+        self._tuner_status.setStyleSheet(
+            "QLabel { background: #1a1a2e; color: #00e5ff; "
+            "padding: 4px 8px; border-radius: 3px; font-family: monospace; }"
+        )
+        self._tuner_status.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        self._tuner_status.setWordWrap(True)
 
         outer = QVBoxLayout(self)
         outer.addWidget(scroll)
+        outer.addWidget(self._tuner_status)
         self.setLayout(outer)
     def update_state_display(self):
         for key, lbl in self.state_labels.items():
@@ -195,6 +207,10 @@ class DynamicControlsTab(QWidget):
         if label == 'set spec wavelength (nm)':
             self.spec.set_nm(value)
         if label == 'probe power':
+            if self._tuner_thread and self._tuner_thread.isRunning():
+                self._tuner_thread.quit()
+                self._tuner_thread.wait()
+            self._on_tuner_status(f"Starting probe tuner → target {value:.2f} µW")
             tuner = ProbeTuner(
                 target       = value,
                 pm           = self.PM,
@@ -202,25 +218,21 @@ class DynamicControlsTab(QWidget):
                 shutter      = self.shutter,
                 initial_wp   = self.state.settings["probe_waveplate_angle"],
             )
+            self._tuner_thread = tuner
+            tuner.reading_ready.connect(self._on_probe_update)
+            tuner.status_message.connect(self._on_tuner_status)
+            tuner.finished.connect(tuner.deleteLater)
+            tuner.finished.connect(lambda: setattr(self, '_tuner_thread', None))
+            tuner.finished.connect(
+                lambda: self._tuner_status.setText("Power tuner: idle")
+            )
+            tuner.start()
 
-            # 1) If there’s already a tuner running, stop it cleanly:
+        if label == 'pump power':
             if self._tuner_thread and self._tuner_thread.isRunning():
                 self._tuner_thread.quit()
                 self._tuner_thread.wait()
-
-            # 2) Keep a reference so it isn't GC’d:
-            self._tuner_thread = tuner
-
-            # 3) Connect signals
-            tuner.reading_ready.connect(self._on_probe_update)
-
-            # once the thread really finishes, delete the object and clear your ref:
-            tuner.finished.connect(tuner.deleteLater)
-            tuner.finished.connect(lambda: setattr(self, '_tuner_thread', None))
-
-            # 4) Start it
-            tuner.start()
-        if label == 'pump power':
+            self._on_tuner_status(f"Starting pump tuner → target {value:.2f} µW")
             tuner = PumpTuner(
                 target       = value,
                 pm           = self.PM,
@@ -228,24 +240,19 @@ class DynamicControlsTab(QWidget):
                 shutter      = self.shutter,
                 initial_wp   = self.state.settings["pump_waveplate_angle"],
             )
-
-            # 1) If there’s already a tuner running, stop it cleanly:
-            if self._tuner_thread and self._tuner_thread.isRunning():
-                self._tuner_thread.quit()
-                self._tuner_thread.wait()
-
-            # 2) Keep a reference so it isn't GC’d:
             self._tuner_thread = tuner
-
-            # 3) Connect signals
             tuner.reading_ready.connect(self._on_pump_update)
-
-            # once the thread really finishes, delete the object and clear your ref:
+            tuner.status_message.connect(self._on_tuner_status)
             tuner.finished.connect(tuner.deleteLater)
             tuner.finished.connect(lambda: setattr(self, '_tuner_thread', None))
-
-            # 4) Start it
+            tuner.finished.connect(
+                lambda: self._tuner_status.setText("Power tuner: idle")
+            )
             tuner.start()
+        if label == 'rail 1':
+            self.btt.rail_1(value)
+        if label == 'rail 2':
+            self.btt.rail_2(value)
         if label == 'ramp gate voltage (v)':
             self.Keithley2400.ramp_voltage(value, verbose = True)  # uses driver defaults for step/dwell
         if label == 'delay stage pos':
@@ -257,15 +264,28 @@ class DynamicControlsTab(QWidget):
         self.update_state_display()
 
     def _on_probe_update(self, angle, power):
-        # update both waveplate‑angle & power in your state
         self.state.settings["probe_waveplate_angle"] = angle
         self.state.settings["probe_power"]            = power
-        self.update_state_display() 
+        self.update_state_display()
+
     def _on_pump_update(self, angle, power):
-        # update both waveplate‑angle & power in your state
         self.state.settings["pump_waveplate_angle"] = angle
         self.state.settings["pump_power"]            = power
-        self.update_state_display() 
+        self.update_state_display()
+
+    def _on_probe_cal_done(self, C, D, E, start_angle):
+        import numpy as np
+        R = np.sqrt(D**2 + E**2)
+        print(
+            f"[ProbeCalib] C={C:.4f} D={D:.4f} E={E:.4f} "
+            f"| P_min={C-R:.2f} µW P_max={C+R:.2f} µW"
+        )
+        self.update_state_display()
+
+    def _on_tuner_status(self, msg):
+        self._tuner_status.setText(f"Power tuner: {msg}")
+        print(f"[PowerTuner] {msg}")
+        QApplication.processEvents()
             
 
     def on_plain_command(self, jdx):
@@ -277,6 +297,12 @@ class DynamicControlsTab(QWidget):
             self.btt.home_rot2()
         if cmd == 'home pump waveplate':
             self.btt.home_rot3()
+            self.state.settings["pump_waveplate_angle"] = 0.0
+            self.update_state_display()
+        if cmd == 'home probe waveplate':
+            self.btt.home_rot4()
+            self.state.settings["probe_waveplate_angle"] = 0.0
+            self.update_state_display()
         if cmd == 'home rails':
             self.btt.homeRails()
         if cmd == 'enable keithley output':
@@ -302,6 +328,26 @@ class DynamicControlsTab(QWidget):
         if cmd == 'set focus zero':
             self.state.settings["focus_position"] = 0.0
             self.update_state_display()
+        if cmd == 'build probe power table':
+            if self._cal_thread and self._cal_thread.isRunning():
+                self._tuner_status.setText("Power tuner: calibration already running")
+                return
+            self._on_tuner_status("Building probe power table…")
+            cal = ProbeCalibrationScanner(
+                pm      = self.PM,
+                btt     = self.btt,
+                shutter = self.shutter,
+                state   = self.state,
+            )
+            self._cal_thread = cal
+            cal.status_message.connect(self._on_tuner_status)
+            cal.calibration_done.connect(self._on_probe_cal_done)
+            cal.finished.connect(cal.deleteLater)
+            cal.finished.connect(lambda: setattr(self, '_cal_thread', None))
+            cal.finished.connect(
+                lambda: self._tuner_status.setText("Power tuner: idle")
+            )
+            cal.start()
 
     def showEvent(self, event):
         """Refresh state display when tab becomes visible."""
