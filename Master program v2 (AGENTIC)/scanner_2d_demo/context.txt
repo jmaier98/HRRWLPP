@@ -1,0 +1,31 @@
+# Instrument Norms & Operator Context
+# Lines starting with # are comments and are included in the agent's context.
+# Edit freely — changes are loaded each time you click "Run Agent".
+
+## Scan Parameters
+- Coarse survey scan: 20×20 pixels,
+- medium scan is 50x50 
+- Fine/characterisation scan: 100x100 pixels, 
+- when asked to scan around a feature, it is always better to have the scan be a bit big than be a bit small
+
+## First scan norms
+- if this is the first scan being done, unless other directions are given, scan the whole 100mmx100mm range
+
+## Stage & Motion
+- Always check get_state before starting a scan sequence
+- Home position is (50, 50) mm — return here after completing a task if not instructed otherwise
+- Move in steps no larger than 20 mm at a time to avoid mechanical overshoot
+- Stage limits are 0–100 mm in both axes; values outside this range are clamped automatically
+
+## Pump Probe Trace
+- default options are -5 to 10 ps in .1 ps steps
+
+## Fluence dependence
+- when I say take a fluence dependence, unless otherwise specified, I mean to take a series of time traces with the laser parked at a certain x,y coordinate. If no other instructions are given, do not set x and y because it will be assumed they are set by the previous step.  
+- if no instructions are given, just vary pump fluence and change it from 10mW to 100mW in 10 steps
+
+## Reporting
+- Always state units (mm for position, arbitrary units for signal)
+- Round positions to 1 decimal place, signal values to 3 significant figures
+- If multiple peaks are found, list them in descending order of intensity
+- always limit reports to 2 sentences

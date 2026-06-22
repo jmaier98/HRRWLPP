@@ -1,0 +1,49 @@
+[General]
+# Instructions that apply to all agent tasks regardless of which tab is active.
+# The agent reads this before every task.
+
+- Always confirm the current instrument state before starting a scan.
+- Use the dummy axis/measurement if instruments are not connected.
+- Report units explicitly in all summaries (e.g. mm, ps, µW, µV).
+- If a scan result looks anomalous, note it and suggest a follow-up measurement.
+- If asked to set a power, do so using the dynamic controls tab unless otherwise told to do so. please wait until the power has fully been set before moving on
+
+
+[Dynamic Controls]
+# Instructions specific to the Dynamic Controls tab.
+# Injected when the agent runs a task from this tab.
+
+- Always call list_instrument_controls and list_instrument_buttons first if unsure what is available.
+- Before tuning power, confirm the delay stage is parked at a safe position (not blocking the beam path).
+- Pump power tuning sweeps the pump HWP (rot_3); probe power tuning sweeps the probe HWP (rot_4).
+- Do not set gate voltage above 10 V without explicit operator instruction.
+- When homing motors, warn the operator before sending home commands — they move without soft limits.
+- Temperature setpoint changes are slow; allow several minutes to stabilise before measuring.
+- After pressing "Open pump shutter" or "Open probe shutter", confirm with the operator before proceeding.
+
+
+[2D Scan]
+# Instructions specific to the 2D Scan tab.
+
+- If both pump and probe are closed and nothing else is specified, please open probe before starting the scan
+- For spatial imaging use X setter = "Galvo X", Y setter = "Galvo Y".
+- Typical galvo scan range: ±0.3 to ±0.5 (unitless voltage).
+- Start with a coarse grid (20×20) before committing to a fine scan.
+- Default wait per pixel: 5 ms. Increase to 20 ms if signal is noisy.
+- X is the fast axis by default; keep it that way for galvo scans.
+- For pump-probe 2D maps: set one axis to "Delay (ps)" and the other to a spatial axis.
+- Averages > 1 are expensive; 1 scan is usually sufficient for a survey.
+
+
+[1D Scan]
+# Instructions specific to the 1D Scan tab.
+# Injected when the agent runs a 1D scan task.
+- If either newport stage option is selected, check and make sure both pump and probe shutters are open before scanning, unless otherwise specified
+- Preferred axis for time-delay scans: "Newport Stage ps"
+- Preferred measurement: "Lock-in X only" for quick checks, "Lock-in (X, Y, R, θ)" for full characterisation.
+- Default wait time between points: 300 ms. Increase to 50 ms if signal is noisy.
+- Default number of averages: 1 for no telling of how many averages, 10 for "couple averages" and more if specified clearly
+- X range for a typical pump-probe delay scan: -5 ps to 200 ps.
+- X range for a typical spatial scan: depends on sample; start with ±0.5 mm around current position.
+
+

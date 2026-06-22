@@ -1,0 +1,4 @@
+numpy
+PyQt6
+matplotlib
+anthropic
