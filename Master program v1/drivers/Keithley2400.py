@@ -8,7 +8,7 @@ GPIB_ADDR_DEFAULT               = 22
 TIMEOUT_MS_DEFAULT              = 5000
 
 # Safety / behavior knobs
-VOLTAGE_SOFT_LIMIT_V            = 10.0      # ±V soft limit for set/ramp
+VOLTAGE_SOFT_LIMIT_V            = 100.0     # ±V soft limit for set/ramp
 CURRENT_COMPLIANCE_DEFAULT_A    = 1e-3      # 1 mA default compliance
 NPLC_DEFAULT                    = 1.0       # integration time (speed vs noise)
 

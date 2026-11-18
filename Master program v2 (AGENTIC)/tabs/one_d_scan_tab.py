@@ -2,16 +2,20 @@
 from __future__ import annotations
 import os, time, math
 import numpy as np
+from helpers.state_header import instrument_state_lines
 from typing import Callable, Dict, Tuple, List
 
 from PyQt6.QtCore import QThread, pyqtSignal, Qt
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QGridLayout,
     QPushButton, QLineEdit, QLabel, QMessageBox, QFileDialog, QComboBox,
+    QCheckBox,
 )
 from PyQt6.QtGui import QDoubleValidator, QIntValidator
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
+
+from tabs.four_d_scan_tab import _interleave_order
 
 
 # ── Worker ────────────────────────────────────────────────────────────────────
@@ -30,23 +34,70 @@ class _Scan1DWorker(QThread):
         measure_fn: Callable[[], Tuple],
         stop_flag_ref: List[bool],
         wait_before_scan_s: float = 0.0,
+        align_enabled: bool = False,
+        alignment_tab=None,
+        align_every_n: int = 1_000_000,
+        wait_after_align_s: float = 0.0,
+        interleave: bool = False,
     ):
         super().__init__()
         self._xs = x_values
+        # Visit order only; every point still reports its natural index, so
+        # the stored traces and plots stay in axis order.
+        self._order = (_interleave_order(len(x_values)) if interleave
+                       else list(range(len(x_values))))
         self._n_scans = max(1, int(n_scans))
         self._wait_s = max(0.0, float(wait_s))
         self._wait_before_scan_s = max(0.0, float(wait_before_scan_s))
         self._set_x = set_x_fn
         self._measure = measure_fn
         self._stop = stop_flag_ref
+        self._align_enabled = bool(align_enabled)
+        self._alignment_tab = alignment_tab
+        self._align_every_n = max(1, int(align_every_n))
+        self._wait_after_align_s = max(0.0, float(wait_after_align_s))
+        self.x_offset = 0.0
+        self.y_offset = 0.0
+
+    def _run_alignment(self):
+        """Align. With "Return to target after alignment" ticked, the
+        Alignment tab finishes by parking the galvo at Target pos + offset,
+        which puts the beam back on the same spot on the sample."""
+        dx, dy = self._alignment_tab.run_alignment_blocking(self._stop)
+        if abs(dx) > 30.0 or abs(dy) > 30.0:
+            print(f"Warning: alignment offset ({dx:.4f},{dy:.4f}) exceeds \u00b130 "
+                  f"\u2014 offsets ignored.")
+            dx, dy = 0.0, 0.0
+        self.x_offset, self.y_offset = dx, dy
+
+        # Settling time once the beam is back on the target spot. Alignment
+        # takes the laser off the measurement point for a while, so the signal
+        # needs a moment to recover before the next data point is taken.
+        if self._wait_after_align_s > 0:
+            time.sleep(self._wait_after_align_s)
 
     def run(self):
         try:
+            point_count = 0
             for scan_idx in range(1, self._n_scans + 1):
-                for ix, x in enumerate(self._xs):
+                for k, ix in enumerate(self._order):
+                    x = self._xs[ix]
                     if self._stop[0]:
                         self.finished.emit(True, "Scan stopped by user.")
                         return
+
+                    if self._align_enabled and self._alignment_tab is not None:
+                        if point_count % self._align_every_n == 0:
+                            try:
+                                self._run_alignment()
+                            except Exception as e:
+                                self.finished.emit(True, f"Alignment error: {e}")
+                                return
+                            if self._stop[0]:
+                                self.finished.emit(True, "Scan stopped by user.")
+                                return
+                    point_count += 1
+
                     try:
                         self._set_x(float(x))
                     except Exception as e:
@@ -54,7 +105,7 @@ class _Scan1DWorker(QThread):
                         return
                     if self._wait_s > 0:
                         time.sleep(self._wait_s)
-                    if ix == 0 and self._wait_before_scan_s > 0:
+                    if k == 0 and self._wait_before_scan_s > 0:
                         time.sleep(self._wait_before_scan_s)
                     try:
                         d = self._measure()
@@ -79,9 +130,11 @@ class OneDScanTab(QWidget):
     axis setters and measurement funcs from it.
     """
 
-    def __init__(self, controller):
+    def __init__(self, controller, alignment_tab=None):
         super().__init__()
         self.controller = controller
+        self.alignment_tab = alignment_tab
+        self.galvo = controller.get_instrument("Galvo")
 
         axis_setters    = controller.AXIS_SETTERS
         meas_funcs      = controller.MEASUREMENT_FUNCS
@@ -121,6 +174,32 @@ class OneDScanTab(QWidget):
         form.addRow("Wait (ms):",                 self.wait_ms)
         form.addRow("Wait before each scan (ms):", self.wait_before_scan_ms)
         form.addRow("# of averages (scans):",     self.n_avg)
+
+        self.interleave_chk = QCheckBox("Interleave")
+        self.interleave_chk.setToolTip(
+            "Take every other point on the way out, then fill in the skipped ones on "
+            "the way back.\nE.g. -3 to 3 step 1 is measured as "
+            "-3, -1, 1, 3, 2, 0, -2 — a coarse pass over the whole range first, "
+            "and the axis finishes one step from its start.")
+        form.addRow("", self.interleave_chk)
+
+        self.align_chk = QCheckBox("Align during scan")
+        self.align_chk.setToolTip(
+            "Re-run the Alignment tab's find-feature between points and "
+            "correct the galvo, so a long scan stays on the same spot as the "
+            "sample drifts.")
+        self.align_every_n = QLineEdit("50")
+        self.align_every_n.setValidator(QIntValidator(1, 1_000_000, self))
+        form.addRow("", self.align_chk)
+        form.addRow("Align every N points:", self.align_every_n)
+
+        self.wait_after_align_ms = QLineEdit("0")
+        self.wait_after_align_ms.setValidator(QIntValidator(0, 1_000_000, self))
+        self.wait_after_align_ms.setToolTip(
+            "Pause after an alignment finishes and the galvo is back on the "
+            "target position, before the next data point is measured. Lets the "
+            "signal settle after the beam has been off the spot.")
+        form.addRow("Wait after alignment (ms):", self.wait_after_align_ms)
 
         # Save controls
         self.folder   = QLineEdit(os.path.expanduser("~/one_d_scans"))
@@ -240,6 +319,28 @@ class OneDScanTab(QWidget):
             QMessageBox.critical(self, "Config error", "Axis or measurement not found.")
             return
 
+        align_enabled = self.align_chk.isChecked()
+        if align_enabled and self.alignment_tab is None:
+            QMessageBox.warning(self, "Alignment",
+                                "Alignment tab not available \u2014 scanning without it.")
+            align_enabled = False
+        if align_enabled:
+            # Captured on the GUI thread: the worker must not read widgets.
+            params = self.alignment_tab.get_alignment_params()
+            self.alignment_tab._cached_alignment_params = params
+            if not params.get("move_to_target"):
+                self.controller.log(
+                    "Warning: aligning during the scan without 'Return to target "
+                    "after alignment' - the galvo will stay where each alignment ends.")
+        try:
+            align_every_n = max(1, int(self.align_every_n.text()))
+        except ValueError:
+            align_every_n = 50
+        try:
+            wait_after_align_s = max(0.0, int(self.wait_after_align_ms.text()) / 1000.0)
+        except ValueError:
+            wait_after_align_s = 0.0
+
         self._stop_flag[0] = False
         self._scan_traces6.clear()
         self._data_rows.clear()
@@ -257,6 +358,11 @@ class OneDScanTab(QWidget):
             set_x_fn=set_x_fn, measure_fn=measure_fn,
             stop_flag_ref=self._stop_flag,
             wait_before_scan_s=wait_before_scan_s,
+            align_enabled=align_enabled,
+            alignment_tab=self.alignment_tab,
+            align_every_n=align_every_n,
+            wait_after_align_s=wait_after_align_s,
+            interleave=self.interleave_chk.isChecked(),
         )
         self._worker.progress.connect(self._on_progress,  Qt.ConnectionType.QueuedConnection)
         self._worker.scan_done.connect(self._on_scan_done, Qt.ConnectionType.QueuedConnection)
@@ -299,7 +405,11 @@ class OneDScanTab(QWidget):
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         self.status_lbl.setText(message)
-        self._worker = None
+        # Wait for the thread to exit before dropping the last reference
+        # (finished is emitted from inside run()), else Qt aborts the process.
+        worker, self._worker = self._worker, None
+        if worker is not None:
+            worker.wait()
         self.controller.log(f"1D scan finished: {message}")
 
     # ── Plot helpers ──────────────────────────────────────────────────────────
@@ -319,8 +429,11 @@ class OneDScanTab(QWidget):
         for tr6 in self._scan_traces6[-5:]:
             self.ax_top.plot(self._xs, tr6[:, s], alpha=0.25)
         if self._current_scan6 is not None:
-            upto = (current_ix + 1) if current_ix is not None else len(self._xs)
-            self.ax_top.plot(self._xs[:upto], self._current_scan6[:upto, s], linewidth=2.0)
+            # Measured points only: with interleaving the trace fills in out
+            # of order, so a prefix slice would miss (or gap) points.
+            cur = self._current_scan6[:, s]
+            m = np.isfinite(cur)
+            self.ax_top.plot(self._xs[m], cur[m], linewidth=2.0, marker=".")
         self.canvas_top.draw_idle()
 
     def _update_avg_and_draw(self):
@@ -426,6 +539,10 @@ class OneDScanTab(QWidget):
             f"  X step:  {self.x_step.text()}",
             f"  Wait (ms): {self.wait_ms.text()}",
             f"  # of averages (scans): {self.n_avg.text()}",
+            f"  Interleaved: {self.interleave_chk.isChecked()}",
+            f"  Alignment enabled: {self.align_chk.isChecked()}",
+            f"  Align every N points: {self.align_every_n.text()}",
+            f"  Wait after alignment (ms): {self.wait_after_align_ms.text()}",
         ]
         if png_traces:
             lines.append(f"  Traces screenshot: {os.path.basename(png_traces)}")
@@ -437,6 +554,8 @@ class OneDScanTab(QWidget):
             "  [scan_index, x_value, data1, data2, data3, data4, data5, data6]",
             "",
             f"X array: {xs_str}",
+            "",
+            *instrument_state_lines(self.controller),
             "",
             "Table begins below this header.",
         ]
@@ -472,6 +591,8 @@ class OneDScanTab(QWidget):
             self.x_step.setText(f"{step:.6g}")
         self.wait_ms.setText(str(int(wait_ms)))
         self.n_avg.setText(str(int(n_scans)))
+        if "interleave" in params:
+            self.interleave_chk.setChecked(bool(params["interleave"]))
 
     def _agent_scan_started(self, xs):
         """Agent started a new scan — reset plot buffers exactly as _start() does."""

@@ -4,6 +4,7 @@ import os, time, math
 from typing import Callable, Dict, Tuple, List, Optional
 
 import numpy as np
+from helpers.state_header import instrument_state_lines
 from PyQt6.QtCore import QThread, pyqtSignal, Qt
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QGridLayout,
@@ -43,8 +44,6 @@ class _Scan2DWorker(QThread):
         alignment_tab=None,
         align_every_n: int = 1_000_000,
         galvo_scan: bool = True,
-        state=None,
-        galvo_ref=None,
     ):
         super().__init__()
         self._xs            = np.asarray(xs, float)
@@ -59,8 +58,6 @@ class _Scan2DWorker(QThread):
         self._alignment_tab = alignment_tab
         self._align_every_n = max(1, int(align_every_n))
         self._galvo_scan    = galvo_scan
-        self._state         = state
-        self._galvo_ref     = galvo_ref
         self.x_offset       = 0.0
         self.y_offset       = 0.0
 
@@ -74,12 +71,15 @@ class _Scan2DWorker(QThread):
         self.y_offset = dy
 
         if self._galvo_scan:
+            # Alignment moved the galvo, so re-send both axes even if the
+            # scan point + offset equals the last commanded position.
+            reset = getattr(self._set_xy, 'reset', None)
+            if reset is not None:
+                reset()
             self._set_xy(float(target_x + self.x_offset), float(target_y + self.y_offset))
         else:
-            if self._galvo_ref is not None and self._state is not None:
-                gx = self._state.settings.get('galvo_x_position', 0.0)
-                gy = self._state.settings.get('galvo_y_position', 0.0)
-                self._galvo_ref.move_xy(float(gx + self.x_offset), float(gy + self.y_offset))
+            # Non-galvo axes are untouched by alignment; the Alignment tab's
+            # "Return to target" has already put the galvo back on the spot.
             self._set_xy(float(target_x), float(target_y))
 
     def _iter_coords(self):
@@ -155,6 +155,7 @@ class TwoDScanTab(QWidget):
         btt     = controller.get_instrument('BTT')
         pm      = controller.get_instrument('PM')
         shutter = controller.get_instrument('Shutter')
+        mirrors = controller.get_instrument('Mirrors')
 
         # ── Axis setters ──────────────────────────────────────────────────────
         self.AXIS_X_SETTERS: Dict[str, Callable[[float], None]] = {}
@@ -172,6 +173,11 @@ class TwoDScanTab(QWidget):
             self.AXIS_Y_SETTERS['Galvo X (mu)'] = lambda y: galvo.move_x(float(y))
             self.AXIS_Y_SETTERS['Galvo Y (mu)'] = lambda y: galvo.move_y(float(y))
 
+        if mirrors is not None:
+            for _d in (self.AXIS_X_SETTERS, self.AXIS_Y_SETTERS):
+                _d['Mirror X (µsteps)'] = lambda v: mirrors.mirror1_x(float(v))
+                _d['Mirror Y (µsteps)'] = lambda v: mirrors.mirror1_y(float(v))
+
         if k2400 is not None:
             self.AXIS_X_SETTERS['Keithley V'] = lambda x: k2400.ramp_voltage(float(x))
             self.AXIS_Y_SETTERS['Keithley V'] = lambda y: k2400.ramp_voltage(float(y))
@@ -185,10 +191,17 @@ class TwoDScanTab(QWidget):
         if btt is not None:
             self.AXIS_X_SETTERS['Fast Probe Power (µW)'] = lambda x: set_fast_probe_power_blocking(float(x), btt, self.state)
             self.AXIS_Y_SETTERS['Fast Probe Power (µW)'] = lambda y: set_fast_probe_power_blocking(float(y), btt, self.state)
-            self.AXIS_X_SETTERS['Pump HWP (°)'] = lambda x: btt.rot_3(float(x), 5000)
-            self.AXIS_Y_SETTERS['Pump HWP (°)'] = lambda y: btt.rot_3(float(y), 5000)
-            self.AXIS_X_SETTERS['Rot 1 (°)']    = lambda x: btt.rot_1(float(x), 5000)
-            self.AXIS_Y_SETTERS['Rot 1 (°)']    = lambda y: btt.rot_1(float(y), 5000)
+            for _d in (self.AXIS_X_SETTERS, self.AXIS_Y_SETTERS):
+                _d['Pump waveplate (°)']  = lambda v: btt.rot_1(float(v), 5000)
+                _d['Probe polarizer (°)'] = lambda v: btt.rot_2(float(v), 5000)
+                _d['Probe waveplate (°)'] = lambda v: btt.rot_3(float(v), 5000)
+                _d['Pump polarizer (°)']  = lambda v: btt.rot_4(float(v), 5000)
+            self.AXIS_X_SETTERS['Objective Z (mm)'] = lambda x: controller.set_objective_z(float(x))
+            self.AXIS_Y_SETTERS['Objective Z (mm)'] = lambda y: controller.set_objective_z(float(y))
+
+        if controller.get_instrument('Lakeshore331') is not None:
+            self.AXIS_X_SETTERS['Temperature (K)'] = lambda x: controller.set_temperature_blocking(float(x))
+            self.AXIS_Y_SETTERS['Temperature (K)'] = lambda y: controller.set_temperature_blocking(float(y))
 
         self.AXIS_X_SETTERS['(dummy) X no-op'] = lambda x: None
         self.AXIS_Y_SETTERS['(dummy) Y no-op'] = lambda y: None
@@ -205,7 +218,14 @@ class TwoDScanTab(QWidget):
             self.MEASUREMENT_FUNCS['Lock-in X only']         = lambda: (lockin.read_x(),)
             self.MEASUREMENT_FUNCS['Lock-in (X, Y, R, θ)']  = lambda: (lockin.read_x(), lockin.read_y(), lockin.read_r(), lockin.read_theta())
             self.MEASUREMENT_FUNCS['PC and Reflectivity']    = lambda: (lockin.read_x(), lockin.read_x2())
-            self.MEASUREMENT_FUNCS['Double PC (X,Y of both)'] = lambda: (*lockin.read_xy(), *lockin.read_xy2())
+            def _double_pc():
+                # data1..3 = lockin 1 (X, Y, Aux1) = current; data4..5 = lockin 2 (X, Y) = voltage
+                # data6 = calculated resistance |V| / |I|
+                ix, iy, aux1 = lockin.read_xy()
+                vx, vy, _ = lockin.read_xy2()
+                return (ix, iy, aux1, vx, vy, _safe_div(math.hypot(vx, vy), math.hypot(ix, iy)))
+
+            self.MEASUREMENT_FUNCS['Double PC (X,Y of both)'] = _double_pc
             self.MEASUREMENT_FUNCS['PC and Offset']          = lambda: (*lockin.read_xy(), self.state.settings.get('x_offset', math.nan), self.state.settings.get('y_offset', math.nan), math.nan)
             self.MEASUREMENT_FUNCS['R (calc), I, V']         = lambda: (_safe_div(lockin.read_x2(), lockin.read_x()), lockin.read_x(), lockin.read_x2(), math.nan, math.nan, math.nan)
             self.MEASUREMENT_FUNCS['Circular Dichroism']     = lambda: (lockin.read_x(), lockin.read_x2(), _safe_div(lockin.read_x(), lockin.read_x2()), math.nan, math.nan, math.nan)
@@ -451,6 +471,8 @@ class TwoDScanTab(QWidget):
                 if xc: set_x(x)
                 if yc: set_y(y)
 
+        _seq_xy.reset = lambda: _last.__setitem__(slice(None), [float('nan'), float('nan')])
+
         galvo_scan = (self.x_setter_combo.currentText().startswith('Galvo') and
                       self.y_setter_combo.currentText().startswith('Galvo'))
 
@@ -460,6 +482,10 @@ class TwoDScanTab(QWidget):
             align_enabled = False
         if align_enabled:
             self.alignment_tab._cached_alignment_params = self.alignment_tab.get_alignment_params()
+            if not galvo_scan and not self.alignment_tab._cached_alignment_params.get('move_to_target'):
+                self.controller.log(
+                    "Warning: aligning during the scan without 'Return to target "
+                    "after alignment' - the galvo will stay where each alignment ends.")
 
         try:
             align_every_n = max(1, int(self.align_every_n.text()))
@@ -482,8 +508,6 @@ class TwoDScanTab(QWidget):
             alignment_tab=self.alignment_tab,
             align_every_n=align_every_n,
             galvo_scan=galvo_scan,
-            state=self.state,
-            galvo_ref=self.controller.get_instrument('Galvo'),
         )
         self._worker.progress.connect(self._on_progress,  Qt.ConnectionType.QueuedConnection)
         self._worker.scan_done.connect(self._on_scan_done, Qt.ConnectionType.QueuedConnection)
@@ -525,7 +549,12 @@ class TwoDScanTab(QWidget):
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         self.status_lbl.setText(message)
-        self._worker = None
+        # finished is emitted from inside run(), so the thread may still be
+        # alive here. Wait for it to exit before dropping the last reference,
+        # otherwise Qt aborts with "QThread: Destroyed while thread is still running".
+        worker, self._worker = self._worker, None
+        if worker is not None:
+            worker.wait()
         self.controller.log(f'2D scan finished: {message}')
 
     def _redraw_image(self):
@@ -663,6 +692,8 @@ class TwoDScanTab(QWidget):
             '',
             'Columns: [scan_index, x, y, data1, data2, data3, data4, data5, data6]',
             '',
+            *instrument_state_lines(self.controller),
+            '',
             'Table begins below this header.',
         ])
         np.savetxt(txt_path, np.asarray(rows, float),
@@ -684,6 +715,90 @@ class TwoDScanTab(QWidget):
         base   = self.filename.text().strip()
         QMessageBox.information(self, 'Saved',
             f'Saved:\n{txt_path}\n{os.path.join(folder, base + ".png")}')
+
+    # ── Agent API ─────────────────────────────────────────────────────────────
+
+    def get_settings(self) -> dict:
+        """Return current 2D-scan UI settings (for the agent)."""
+        return {
+            "fast_axis":       self.fast_axis_combo.currentText(),
+            "x_setter":        self.x_setter_combo.currentText(),
+            "x_start":         self.x_start.text(),
+            "x_end":           self.x_end.text(),
+            "x_step":          self.x_step.text(),
+            "y_setter":        self.y_setter_combo.currentText(),
+            "y_start":         self.y_start.text(),
+            "y_end":           self.y_end.text(),
+            "y_step":          self.y_step.text(),
+            "measurement":     self.meas_combo.currentText(),
+            "display_channel": self.display_combo.currentText(),
+            "show_average":    self.show_avg_chk.isChecked(),
+            "wait_ms":         self.wait_ms.text(),
+            "averages":        self.n_scans.text(),
+            "align_enabled":   self.align_chk.isChecked(),
+            "align_every_n":   self.align_every_n.text(),
+            "folder":          self.folder.text(),
+            "filename":        self.filename.text(),
+            "x_setters_available":      list(self.AXIS_X_SETTERS.keys()),
+            "y_setters_available":      list(self.AXIS_Y_SETTERS.keys()),
+            "measurements_available":   list(self.MEASUREMENT_FUNCS.keys()),
+            "display_channels_available": [self.display_combo.itemText(i)
+                                           for i in range(self.display_combo.count())],
+        }
+
+    def apply_settings(self, settings: dict) -> list[str]:
+        """Apply a subset of 2D-scan settings from the agent. Returns warnings."""
+        warnings: list[str] = []
+
+        def _set_combo(combo, key):
+            if key in settings:
+                v = str(settings[key])
+                idx = combo.findText(v)
+                if idx >= 0:
+                    combo.setCurrentIndex(idx)
+                else:
+                    opts = [combo.itemText(i) for i in range(combo.count())]
+                    warnings.append(f"'{v}' is not a valid choice for '{key}'. "
+                                    f"Options: {opts}")
+
+        def _set_text(widget, key):
+            if key in settings:
+                widget.setText(str(settings[key]))
+
+        _set_combo(self.fast_axis_combo, "fast_axis")
+        _set_combo(self.x_setter_combo,  "x_setter")
+        _set_combo(self.y_setter_combo,  "y_setter")
+        _set_combo(self.meas_combo,      "measurement")
+        _set_combo(self.display_combo,   "display_channel")
+
+        _set_text(self.x_start,       "x_start")
+        _set_text(self.x_end,         "x_end")
+        _set_text(self.x_step,        "x_step")
+        _set_text(self.y_start,       "y_start")
+        _set_text(self.y_end,         "y_end")
+        _set_text(self.y_step,        "y_step")
+        _set_text(self.wait_ms,       "wait_ms")
+        _set_text(self.n_scans,       "averages")
+        _set_text(self.align_every_n, "align_every_n")
+        _set_text(self.folder,        "folder")
+        _set_text(self.filename,      "filename")
+
+        if "show_average" in settings:
+            self.show_avg_chk.setChecked(bool(settings["show_average"]))
+        if "align_enabled" in settings:
+            self.align_chk.setChecked(bool(settings["align_enabled"]))
+
+        return warnings
+
+    def set_display_channel(self, channel: str) -> dict:
+        """Set which data channel (data1…data6) is displayed; redraws immediately."""
+        idx = self.display_combo.findText(str(channel))
+        if idx < 0:
+            opts = [self.display_combo.itemText(i)
+                    for i in range(self.display_combo.count())]
+            return {"error": f"Unknown channel '{channel}'. Options: {opts}"}
+        self.display_combo.setCurrentIndex(idx)
+        return {"status": "ok", "display_channel": self.display_combo.currentText()}
 
     def closeEvent(self, event):
         if self._worker and self._worker.isRunning():

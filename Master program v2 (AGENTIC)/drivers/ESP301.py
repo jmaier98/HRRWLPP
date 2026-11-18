@@ -118,7 +118,6 @@ class ESP301Controller:
 
     def ps_to_mm(self, ps):
         t0 = self.state.settings["time zero pos"]
-        print(t0, ps)
         return t0 - ps / 6.667
 
     def close(self):

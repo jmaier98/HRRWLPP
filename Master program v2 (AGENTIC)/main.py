@@ -37,11 +37,15 @@ from tabs.one_d_scan_tab import OneDScanTab
 from tabs.dynamic_controls_tab import DynamicControlsTab
 from tabs.two_d_scan_tab import TwoDScanTab
 from tabs.three_d_scan_tab import ThreeDScanTab
+from tabs.four_d_scan_tab import FourDScanTab
 from tabs.webcam_tab import WebcamTab
 from tabs.find_focus_tab import FindFocusTab
 from tabs.alignment_tab import AlignmentTab
+from tabs.tracking_tab import TrackingTab
 from tabs.powermeter_tab import PowerMeterTab
 from tabs.resistance_tab import ResistanceTab
+from tabs.gate_breakdown_tab import GateBreakdownTab
+from tabs.temperature_control_tab import TemperatureControlTab
 
 CONTEXT_FILE = Path(__file__).parent / "context.txt"
 
@@ -479,8 +483,12 @@ class MainWindow(QMainWindow):
             "1d_scan":          self.one_d_tab,
             "2d_scan":          self.two_d_tab,
             "3d_scan":          self.three_d_tab,
+            "4d_scan":          self.four_d_tab,
             "alignment":        self.alignment_tab,
+            "tracking":         self.tracking_tab,
             "find_focus":       self.find_focus_tab,
+            "webcam":           self.webcam_tab,
+            "gate_breakdown":   self.gate_tab,
         }
         self.agent_panel = AgentPanel(self.controller, self.tabs,
                                       instrument_tabs=instrument_tabs)
@@ -504,18 +512,25 @@ class MainWindow(QMainWindow):
         self.state.settings["probe_shutter_open"] = False
 
     def _add_tabs(self):
-        webcam = WebcamTab(self.controller)
+        self.webcam_tab = WebcamTab(self.controller)
+        webcam = self.webcam_tab
         self.tabs.addTab(webcam, "Webcam")
 
-        self.one_d_tab = OneDScanTab(self.controller)
+        # Built before the scan tabs that align during a scan, but added to the
+        # tab bar in its usual place below.
+        self.alignment_tab = AlignmentTab(self.controller, webcam_tab=webcam)
+        alignment = self.alignment_tab
+
+        self.one_d_tab = OneDScanTab(self.controller, alignment_tab=alignment)
         self.tabs.addTab(self.one_d_tab, "1D Scan")
 
         self.dynamic_tab = DynamicControlsTab(self.controller)
         self.tabs.addTab(self.dynamic_tab, "Dynamic Controls")
 
-        self.alignment_tab = AlignmentTab(self.controller)
-        alignment = self.alignment_tab
         self.tabs.addTab(alignment, "Alignment")
+
+        self.tracking_tab = TrackingTab(self.controller, alignment_tab=alignment)
+        self.tabs.addTab(self.tracking_tab, "Tracking")
 
         self.two_d_tab = TwoDScanTab(self.controller, alignment_tab=alignment)
         self.tabs.addTab(self.two_d_tab, "2D Scan")
@@ -523,6 +538,9 @@ class MainWindow(QMainWindow):
         self.three_d_tab = ThreeDScanTab(self.controller, alignment_tab=alignment)
         three_d_tab = self.three_d_tab
         self.tabs.addTab(three_d_tab, "3D Scan")
+
+        self.four_d_tab = FourDScanTab(self.controller, alignment_tab=alignment)
+        self.tabs.addTab(self.four_d_tab, "4D Scan")
 
         self.find_focus_tab = FindFocusTab(self.controller)
         find_focus = self.find_focus_tab
@@ -533,6 +551,12 @@ class MainWindow(QMainWindow):
 
         resistance = ResistanceTab(self.controller)
         self.tabs.addTab(resistance, "Resistance")
+
+        self.gate_tab = GateBreakdownTab(self.controller)
+        self.tabs.addTab(self.gate_tab, "Gate Breakdown")
+
+        self.temperature_tab = TemperatureControlTab(self.controller)
+        self.tabs.addTab(self.temperature_tab, "Temperature")
 
         self.context_tab = ContextTab()
         self.tabs.addTab(self.context_tab, "Context / Norms")

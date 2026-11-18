@@ -88,7 +88,7 @@ class _Scan1DWorker(QThread):
                                 # Offsets are now set in state variables by _find_feature
                                 x_offset = self._alignment_tab.state.settings.get("x_offset", math.nan)
                                 y_offset = self._alignment_tab.state.settings.get("y_offset", math.nan)
-                                d = (x_offset, y_offset, math.nan, math.nan, math.nan, math.nan)
+                                d = (x_offset, y_offset, time.time(), math.nan, math.nan, math.nan)
                             else:
                                 d = (math.nan, math.nan, math.nan, math.nan, math.nan, math.nan)
                         else:
@@ -160,6 +160,10 @@ class OneDScanTab(QWidget):
             self.shutter = self.IM.get("Shutter")
         except Exception:
             pass
+        try:
+            self.lakeshore = self.IM.get("Lakeshore331")
+        except Exception:
+            self.lakeshore = None
         # --- Keithley 2400 safe-voltage axis (≤ 50 mV ramp sub-steps) ---
         try:
             k2400 = self.IM.get("Keithley2400")
@@ -172,7 +176,7 @@ class OneDScanTab(QWidget):
         
         self.AXIS_SETTERS["Newport Stage mm"] = lambda x: self.stage.move_and_wait(float(x))
         self.AXIS_SETTERS["Newport Stage ps"] = lambda x: self.stage.move_and_wait_ps(float(x))
-        self.AXIS_SETTERS["Galvo X "] = lambda x: self.galvo.movexy(float(x), 0.5)
+        self.AXIS_SETTERS["Galvo X "] = lambda x: self.galvo.move(float(x), self.state.settings.get("galvo_y_position", 0.0))
         self.AXIS_SETTERS["Keithley V "] = lambda x: k2400.ramp_voltage(float(x))
         self.AXIS_SETTERS["Pump Waveplate"] = lambda x: self.BTT.rot_3(float(x), 5000)
 
@@ -221,8 +225,38 @@ class OneDScanTab(QWidget):
             def _double_pc():
                 Vx1, Vy1, PC = self.lockin.read_xy()
                 Vx2, Vy2, PC2 = self.lockin.read_xy2()
-                return (Vx1, Vy1, Vx2, Vy2, PC, math.nan)
+                resistance = _safe_div(Vx2, Vx1)
+                return (Vx1, Vy1, Vx2, Vy2, PC, resistance)
             self.MEASUREMENT_FUNCS["Double PC (X,Y of both)"] = _double_pc
+
+        if self.lockin and self.lakeshore:
+            def _four_point_probe_vs_temp():
+                x = self.lockin.read_x()
+                y = self.lockin.read_y()
+                temp = self.lakeshore.read_temp()
+                return (x, y, temp, math.nan, math.nan, math.nan)
+            self.MEASUREMENT_FUNCS["4 point probe vs temp"] = _four_point_probe_vs_temp
+
+            def _lockin2_vs_temp():
+                x = self.lockin.read_x2()
+                y = self.lockin.read_y2()
+                temp = self.lakeshore.read_temp()
+                return (x, y, temp, math.nan, math.nan, math.nan)
+            self.MEASUREMENT_FUNCS["lockin 2 vs temp"] = _lockin2_vs_temp
+
+        if k2400 is not None:
+            def _keithley_read_I_2wire():
+                result = k2400.read_current()
+                return (result if result is not None else math.nan,)
+
+            def _keithley_read_IV_2wire():
+                result = k2400.read_iv()
+                if result is None:
+                    return (math.nan, math.nan)
+                return result  # (current_A, voltage_V)
+
+            self.MEASUREMENT_FUNCS["Keithley I (2-wire)"] = _keithley_read_I_2wire
+            self.MEASUREMENT_FUNCS["Keithley I+V (2-wire)"] = _keithley_read_IV_2wire
 
         self.MEASUREMENT_FUNCS["(dummy) all NaN"] = lambda: (math.nan,)*6
         self.MEASUREMENT_FUNCS["track offsets"] = lambda: (math.nan, math.nan, math.nan, math.nan, math.nan, math.nan)  # Special case handled in worker
@@ -245,7 +279,7 @@ class OneDScanTab(QWidget):
         self.display_combo = QComboBox()
         # choices map to data columns 0..5 (data1..data6)
         self.display_combo.addItems([
-            "data1", "data2", "data3", "data4", "data5", "data6"
+            "data1", "data2", "data3", "data4", "data5", "resistance"
         ])
 
         dv = QDoubleValidator(-1e300, 1e300, 9, self)

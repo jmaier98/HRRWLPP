@@ -285,7 +285,11 @@ class TemperatureControlTab(QWidget):
             return
         self.xbuf.clear()
         self.ybuf.clear()
-        self._redraw()
+        self.hbuf.clear()
+        self.line.set_data([], [])
+        self.hline.set_data([], [])
+        self.ax.set_xlim(0, 1)
+        self.canvas.draw_idle()
 
         self.poller = TempPoller(self.LS, input_units="K", interval_s=self.sp_interval.value())
         self.poller.new_sample.connect(self._handle_sample)

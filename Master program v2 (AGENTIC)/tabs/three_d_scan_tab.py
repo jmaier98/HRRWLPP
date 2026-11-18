@@ -4,6 +4,7 @@ import os, time, math
 from typing import Callable, Dict, Tuple, List, Optional
 
 import numpy as np
+from helpers.state_header import instrument_state_lines
 from PyQt6.QtCore import QThread, pyqtSignal, Qt
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QGridLayout,
@@ -57,8 +58,6 @@ class _Scan3DWorker(QThread):
         alignment_tab=None,
         align_every_n: int = 50,
         galvo_scan: bool = True,
-        state=None,
-        galvo_ref=None,
     ):
         super().__init__()
         self._zs            = np.asarray(zs, float)
@@ -76,8 +75,6 @@ class _Scan3DWorker(QThread):
         self._alignment_tab = alignment_tab
         self._align_every_n = max(1, int(align_every_n))
         self._galvo_scan    = galvo_scan
-        self._state         = state
-        self._galvo_ref     = galvo_ref
         self.x_offset       = 0.0
         self.y_offset       = 0.0
 
@@ -104,12 +101,15 @@ class _Scan3DWorker(QThread):
         self.y_offset = dy
 
         if self._galvo_scan:
+            # Alignment moved the galvo, so re-send both axes even if the
+            # scan point + offset equals the last commanded position.
+            reset = getattr(self._set_xy, 'reset', None)
+            if reset is not None:
+                reset()
             self._set_xy(float(target_x + self.x_offset), float(target_y + self.y_offset))
         else:
-            if self._galvo_ref is not None and self._state is not None:
-                gx = self._state.settings.get('galvo_x_position', 0.0)
-                gy = self._state.settings.get('galvo_y_position', 0.0)
-                self._galvo_ref.move_xy(float(gx + self.x_offset), float(gy + self.y_offset))
+            # Non-galvo axes are untouched by alignment; the Alignment tab's
+            # "Return to target" has already put the galvo back on the spot.
             self._set_xy(float(target_x), float(target_y))
 
     def _measure_point(self) -> Optional[tuple]:
@@ -256,6 +256,7 @@ class ThreeDScanTab(QWidget):
         btt     = controller.get_instrument('BTT')
         pm      = controller.get_instrument('PM')
         shutter = controller.get_instrument('Shutter')
+        mirrors = controller.get_instrument('Mirrors')
 
         # ── Axis setters ──────────────────────────────────────────────────────
         self.AXIS_Z_SETTERS: Dict[str, Callable[[float], None]] = {}
@@ -272,6 +273,11 @@ class ThreeDScanTab(QWidget):
                 d['Galvo X (mu)'] = lambda v: galvo.move_x(float(v))
                 d['Galvo Y (mu)'] = lambda v: galvo.move_y(float(v))
 
+        if mirrors is not None:
+            for d in (self.AXIS_Z_SETTERS, self.AXIS_X_SETTERS, self.AXIS_Y_SETTERS):
+                d['Mirror X (µsteps)'] = lambda v: mirrors.mirror1_x(float(v))
+                d['Mirror Y (µsteps)'] = lambda v: mirrors.mirror1_y(float(v))
+
         if k2400 is not None:
             for d in (self.AXIS_Z_SETTERS, self.AXIS_X_SETTERS, self.AXIS_Y_SETTERS):
                 d['Keithley V'] = lambda v: k2400.ramp_voltage(float(v))
@@ -284,8 +290,15 @@ class ThreeDScanTab(QWidget):
         if btt is not None:
             for d in (self.AXIS_Z_SETTERS, self.AXIS_X_SETTERS, self.AXIS_Y_SETTERS):
                 d['Fast Probe Power (µW)'] = lambda v: set_fast_probe_power_blocking(float(v), btt, self.state)
-                d['Pump HWP (°)']          = lambda v: btt.rot_3(float(v), 5000)
-                d['Rot 1 (°)']             = lambda v: btt.rot_1(float(v), 5000)
+                d['Pump waveplate (°)']   = lambda v: btt.rot_1(float(v), 5000)
+                d['Probe polarizer (°)']  = lambda v: btt.rot_2(float(v), 5000)
+                d['Probe waveplate (°)']  = lambda v: btt.rot_3(float(v), 5000)
+                d['Pump polarizer (°)']   = lambda v: btt.rot_4(float(v), 5000)
+                d['Objective Z (mm)']      = lambda v: controller.set_objective_z(float(v))
+
+        if controller.get_instrument('Lakeshore331') is not None:
+            for d in (self.AXIS_Z_SETTERS, self.AXIS_X_SETTERS, self.AXIS_Y_SETTERS):
+                d['Temperature (K)'] = lambda v: controller.set_temperature_blocking(float(v))
 
         for d in (self.AXIS_Z_SETTERS, self.AXIS_X_SETTERS, self.AXIS_Y_SETTERS):
             d['(dummy) no-op'] = lambda v: None
@@ -302,7 +315,14 @@ class ThreeDScanTab(QWidget):
             self.MEASUREMENT_FUNCS['Lock-in X only']           = lambda: (lockin.read_x(),)
             self.MEASUREMENT_FUNCS['Lock-in (X, Y, R, θ)']    = lambda: (lockin.read_x(), lockin.read_y(), lockin.read_r(), lockin.read_theta())
             self.MEASUREMENT_FUNCS['PC and Reflectivity']      = lambda: (lockin.read_x(), lockin.read_x2())
-            self.MEASUREMENT_FUNCS['Double PC (X,Y of both)']  = lambda: (*lockin.read_xy(), *lockin.read_xy2())
+            def _double_pc():
+                # data1..3 = lockin 1 (X, Y, Aux1) = current; data4..5 = lockin 2 (X, Y) = voltage
+                # data6 = calculated resistance |V| / |I|
+                ix, iy, aux1 = lockin.read_xy()
+                vx, vy, _ = lockin.read_xy2()
+                return (ix, iy, aux1, vx, vy, _safe_div(math.hypot(vx, vy), math.hypot(ix, iy)))
+
+            self.MEASUREMENT_FUNCS['Double PC (X,Y of both)']  = _double_pc
             self.MEASUREMENT_FUNCS['PC and Offset']            = lambda: (*lockin.read_xy(), self.state.settings.get('x_offset', math.nan), self.state.settings.get('y_offset', math.nan), math.nan)
             self.MEASUREMENT_FUNCS['R (calc), I, V']           = lambda: (_safe_div(lockin.read_x2(), lockin.read_x()), lockin.read_x(), lockin.read_x2(), math.nan, math.nan, math.nan)
             self.MEASUREMENT_FUNCS['Circular Dichroism']       = lambda: (lockin.read_x(), lockin.read_x2(), _safe_div(lockin.read_x(), lockin.read_x2()), math.nan, math.nan, math.nan)
@@ -322,8 +342,8 @@ class ThreeDScanTab(QWidget):
 
         self.z_setter_combo = QComboBox()
         self.z_setter_combo.addItems(list(self.AXIS_Z_SETTERS.keys()))
-        if 'Pump HWP (°)' in self.AXIS_Z_SETTERS:
-            self.z_setter_combo.setCurrentText('Pump HWP (°)')
+        if 'Pump waveplate (°)' in self.AXIS_Z_SETTERS:
+            self.z_setter_combo.setCurrentText('Pump waveplate (°)')
         self.z_start = QLineEdit('0');   self.z_start.setValidator(dv)
         self.z_end   = QLineEdit('180'); self.z_end.setValidator(dv)
         self.z_step  = QLineEdit('10');  self.z_step.setValidator(dv_pos)
@@ -550,6 +570,8 @@ class ThreeDScanTab(QWidget):
                 if xc: set_x(x)
                 if yc: set_y(y)
 
+        _seq_xy.reset = lambda: _last.__setitem__(slice(None), [float('nan'), float('nan')])
+
         galvo_scan = (self.x_setter_combo.currentText().startswith('Galvo') and
                       self.y_setter_combo.currentText().startswith('Galvo'))
 
@@ -559,6 +581,10 @@ class ThreeDScanTab(QWidget):
             align_enabled = False
         if align_enabled:
             self.alignment_tab._cached_alignment_params = self.alignment_tab.get_alignment_params()
+            if not galvo_scan and not self.alignment_tab._cached_alignment_params.get('move_to_target'):
+                self.controller.log(
+                    "Warning: aligning during the scan without 'Return to target "
+                    "after alignment' - the galvo will stay where each alignment ends.")
 
         try:
             align_every_n = max(1, int(self.align_every_n.text()))
@@ -588,8 +614,6 @@ class ThreeDScanTab(QWidget):
             alignment_tab=self.alignment_tab,
             align_every_n=align_every_n,
             galvo_scan=galvo_scan,
-            state=self.state,
-            galvo_ref=self.controller.get_instrument('Galvo'),
         )
         self._worker.progress.connect(self._on_progress,  Qt.ConnectionType.QueuedConnection)
         self._worker.scan_done.connect(self._on_scan_done, Qt.ConnectionType.QueuedConnection)
@@ -643,7 +667,11 @@ class ThreeDScanTab(QWidget):
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         self.status_lbl.setText(message)
-        self._worker = None
+        # Wait for the thread to exit before dropping the last reference
+        # (finished is emitted from inside run()), else Qt aborts the process.
+        worker, self._worker = self._worker, None
+        if worker is not None:
+            worker.wait()
         self.controller.log(f'3D scan finished: {message}')
 
     def _redraw_image(self):
@@ -727,6 +755,8 @@ class ThreeDScanTab(QWidget):
             '',
             'Columns: [z, x, y, data1, data2, data3, data4, data5, data6]',
             '',
+            *instrument_state_lines(self.controller),
+            '',
             'Table begins below this header.',
         ])
         try:
@@ -751,14 +781,32 @@ class ThreeDScanTab(QWidget):
             Nz, Ny, Nx = len(self._zs), len(self._ys), len(self._xs)
             self.data = np.full((Nz, Ny, Nx, 6), np.nan, float)
             self._scan_index = 0
-            self._im_artist = None
-            self.ax_img.cla()
-            if self._cbar is not None:
-                self._cbar.remove()
-                self._cbar = None
-            divider = make_axes_locatable(self.ax_img)
-            self._cax = divider.append_axes('right', size='4%', pad=0.05)
+            self._reset_axes()
             self.status_lbl.setText('Agent scan running…')
+
+    def _reset_axes(self):
+        """Clear the image axes so a new scan starts from a clean figure.
+
+        The colorbar must be removed *before* ax.cla(): clearing the axes first
+        detaches the divider-appended colorbar axes and remove() then raises.
+        The old cax is dropped too, otherwise each agent scan leaks an axes.
+        """
+        self._im_artist = None
+        if self._cbar is not None:
+            try:
+                self._cbar.remove()
+            except Exception:
+                pass
+            self._cbar = None
+        if self._cax is not None:
+            try:
+                self._cax.remove()
+            except Exception:
+                pass
+        self.ax_img.cla()
+        self.ax_img.set_facecolor('#ffffff')
+        divider = make_axes_locatable(self.ax_img)
+        self._cax = divider.append_axes('right', size='4%', pad=0.05)
 
     def _agent_point_ready(self, iz: int, ix: int, iy: int,
                            z: float, x: float, y: float, d6: tuple):

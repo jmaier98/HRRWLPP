@@ -21,14 +21,26 @@ from controller import MicroscopeController
 from agent_tools import TOOLS, dispatch
 
 # ── Configuration — edit these to match your Ollama server ───────────────────
-OLLAMA_IP    = "10.82.5.167"
-OLLAMA_PORT  = 11434
-OLLAMA_MODEL = "gemma4:26b"
-BASE_URL     = f"http://{OLLAMA_IP}:{OLLAMA_PORT}"
+OLLAMA_IP      = "10.82.5.167"
+OLLAMA_PORT    = 11434
+OLLAMA_MODEL   = "gemma4:26b"
+OLLAMA_NUM_CTX = 32768  # context window. Matches the server's OLLAMA_CONTEXT_LENGTH.
+                        # Large enough for multi-step procedures with reference images
+                        # plus the full tool schemas and conversation history.
+BASE_URL       = f"http://{OLLAMA_IP}:{OLLAMA_PORT}"
 
 SYSTEM_PROMPT = """\
-You are an AI agent controlling a pump-probe microscope. You have access to tools \
-to read instrument state, list available scan axes and measurements, and run 1D scans.
+You are an AI agent controlling a pump-probe microscope. You have tools to read \
+instrument state, set instrument controls and press command buttons, run 1D/2D/3D/4D \
+scans, find focus, run feature alignment, and follow saved measurement procedures.
+A 4D scan is a spatial map with a full inner 2D scan (e.g. delay time vs. a rotation \
+mount) taken at every spatial pixel.
+
+If the user asks to run, set up, or follow a named procedure or standard setup \
+(e.g. "standard photocurrent map"), first call list_procedures, then get_procedure \
+to load the written steps and reference images. Follow the steps in order, using the \
+standard settings given, and compare each scan/focus/alignment result against the \
+reference images in the document to judge whether a step succeeded or must be redone.
 
 After every set of tool calls, include a short (1-3 sentence) plain-English summary \
 of what you just did and what you found. This is shown live to the operator.
@@ -94,7 +106,8 @@ class AgentWorker(QThread):
                 resp = requests.post(
                     f"{BASE_URL}/api/chat",
                     json={"model": OLLAMA_MODEL, "messages": messages,
-                          "tools": ollama_tools, "stream": False},
+                          "tools": ollama_tools, "stream": False,
+                          "options": {"num_ctx": OLLAMA_NUM_CTX}},
                     timeout=300,
                 )
                 resp.raise_for_status()
@@ -165,12 +178,27 @@ class AgentWorker(QThread):
 
             # Send images as a follow-up user message so the model can see them
             if pending_images:
-                messages.append({
-                    "role": "user",
-                    "content": (
+                if "get_procedure" in tool_names:
+                    caption = (
+                        f"{len(pending_images)} procedure page(s) attached. These are the "
+                        "written instructions and reference images for the requested setup. "
+                        "Study them — including any 'good vs bad' example images — then carry "
+                        "out the steps in order using your tools."
+                    )
+                elif "capture_webcam_frame" in tool_names:
+                    caption = (
+                        f"{len(pending_images)} webcam frame(s) attached — this is the live "
+                        "view of the sample. Use it to inspect the sample, locate features, "
+                        "or confirm the result, then decide your next step."
+                    )
+                else:
+                    caption = (
                         f"Scan complete. {len(pending_images)} image(s) attached. "
                         "Use the image(s) and the JSON summary above to decide your next step."
-                    ),
+                    )
+                messages.append({
+                    "role": "user",
+                    "content": caption,
                     "images": pending_images,
                 })
 

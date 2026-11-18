@@ -14,6 +14,16 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 POLL_INTERVAL_MS = 50    # timer interval
 BUFFER_SIZE      = 300   # rolling window length
 
+# One colour per tuning phase so the traces are visually separate
+TUNER_PHASE_COLORS = {
+    "Rough sweep":       "#2980b9",   # blue
+    "Medium scan":       "#e67e22",   # orange
+    "Fine scan":         "#27ae60",   # green
+    "Final":             "#c0392b",   # red
+    "Calibration sweep": "#2980b9",   # blue
+}
+TUNER_DEFAULT_COLOR = "#8e44ad"       # purple, for any unknown phase
+
 
 class PowerMeterTab(QWidget):
     def __init__(self, controller):
@@ -54,8 +64,8 @@ class PowerMeterTab(QWidget):
 
         root.addLayout(top)
 
-        # Polarizer controls
-        root.addWidget(self._build_polarizer_group())
+        # Waveplate controls
+        root.addWidget(self._build_waveplate_group())
 
         # Large numeric readout
         self.current_lbl = QLabel("-- µW")
@@ -88,15 +98,38 @@ class PowerMeterTab(QWidget):
         self._timer = QTimer()
         self._timer.timeout.connect(self._tick)
 
-    # ── Polarizer controls ────────────────────────────────────────────────────
+        # ── Power-tuner live view ─────────────────────────────────────────────
+        # While a pump/probe tuner (or calibration sweep) runs, this tab is
+        # brought to the front and plots angle vs power as readings arrive.
+        # Each scan phase (rough / medium / fine / final) gets its own line so
+        # the traces are not connected across phases.
+        self._tuner_active = False
+        self._tuner_lines: list = []           # Line2D objects, one per phase
+        self._tuner_cur = None                 # line receiving current readings
+        self._tuner_all_angles: list[float] = []
+        self._tuner_all_powers: list[float] = []
 
-    def _build_polarizer_group(self) -> QGroupBox:
+        sigs = controller.scan_signals
+        sigs.tuner_started.connect(self._on_tuner_started,
+                                   Qt.ConnectionType.QueuedConnection)
+        sigs.tuner_phase.connect(self._on_tuner_phase,
+                                 Qt.ConnectionType.QueuedConnection)
+        sigs.tuner_reading.connect(self._on_tuner_reading,
+                                   Qt.ConnectionType.QueuedConnection)
+        sigs.tuner_finished.connect(self._on_tuner_finished,
+                                    Qt.ConnectionType.QueuedConnection)
+
+    # ── Waveplate controls ────────────────────────────────────────────────────
+
+    def _build_waveplate_group(self) -> QGroupBox:
         """
-        Two rows — one for pump polarizer (Rot 4), one for probe polarizer (Rot 3).
+        Two rows — one for pump waveplate (Rot 1), one for probe waveplate (Rot 3).
+        These are the mounts the power tuners drive, so they are what you reach
+        for when setting power by hand.
         Each row has a slider for coarse dragging and a spin-box for precise entry.
         Both update the motor and state in real time.
         """
-        box   = QGroupBox("Polarizers")
+        box   = QGroupBox("Waveplates")
         grid  = QGridLayout(box)
         grid.setHorizontalSpacing(10)
         grid.setVerticalSpacing(6)
@@ -105,10 +138,10 @@ class PowerMeterTab(QWidget):
         ANGLE_MIN, ANGLE_MAX = 0.0, 360.0
 
         for row, (label, rot_fn, state_key) in enumerate([
-            ("Pump polarizer (Rot 4):",
-             lambda a: self.btt.rot_4(a, 5000) if self.btt else None,
-             "rot_4_angle"),
-            ("Probe polarizer (Rot 3):",
+            ("Pump waveplate (Rot 1):",
+             lambda a: self.btt.rot_1(a, 5000) if self.btt else None,
+             "rot_1_angle"),
+            ("Probe waveplate (Rot 3):",
              lambda a: self.btt.rot_3(a, 5000) if self.btt else None,
              "rot_3_angle"),
         ]):
@@ -140,13 +173,13 @@ class PowerMeterTab(QWidget):
                 _spin.blockSignals(True)
                 _spin.setValue(angle)
                 _spin.blockSignals(False)
-                self._send_polarizer(_rot, _key, angle)
+                self._send_waveplate(_rot, _key, angle)
 
             def _on_spin(angle, _slider=slider, _rot=rot_fn, _key=state_key):
                 _slider.blockSignals(True)
                 _slider.setValue(int(angle * SLIDER_SCALE))
                 _slider.blockSignals(False)
-                self._send_polarizer(_rot, _key, angle)
+                self._send_waveplate(_rot, _key, angle)
 
             slider.valueChanged.connect(_on_slider)
             spin.valueChanged.connect(_on_spin)
@@ -157,24 +190,104 @@ class PowerMeterTab(QWidget):
 
         return box
 
-    def _send_polarizer(self, rot_fn, state_key: str, angle: float):
+    def _send_waveplate(self, rot_fn, state_key: str, angle: float):
         """Move a rotation mount and update state."""
         try:
             rot_fn(angle)
             self.state.settings[state_key] = angle
         except Exception as e:
-            self.controller.log(f"Polarizer move error: {e}")
+            self.controller.log(f"Waveplate move error: {e}")
+
+    # ── Power-tuner live plotting ─────────────────────────────────────────────
+
+    def _clear_tuner_lines(self):
+        """Remove all per-phase tuning traces and the legend from the axes."""
+        for line in self._tuner_lines:
+            try:
+                line.remove()
+            except ValueError:
+                pass
+        self._tuner_lines = []
+        self._tuner_cur = None
+        self._tuner_all_angles = []
+        self._tuner_all_powers = []
+        legend = self.ax.get_legend()
+        if legend is not None:
+            legend.remove()
+
+    def _on_tuner_started(self, label: str):
+        # Pause the rolling live view — the tuner owns the power meter now.
+        # (No btt.clear() here: the tuner needs the power-meter rail in the beam.)
+        if self._timer.isActive():
+            self._timer.stop()
+            self.start_btn.setEnabled(True)
+            self.stop_btn.setEnabled(False)
+        self._tuner_active = True
+        self._clear_tuner_lines()
+        self._line.set_data([], [])
+        self.ax.set_title(label)
+        self.ax.set_xlabel("Waveplate angle (°)")
+        self.canvas.draw_idle()
+
+    def _on_tuner_phase(self, name: str):
+        if not self._tuner_active:
+            return
+        color = TUNER_PHASE_COLORS.get(name, TUNER_DEFAULT_COLOR)
+        if name == "Final":
+            # Single averaged point at the target angle — big standalone marker
+            line, = self.ax.plot([], [], "o", markersize=9, color=color,
+                                 label=name, zorder=5)
+        else:
+            line, = self.ax.plot([], [], "o-", markersize=3.5, linewidth=1.2,
+                                 color=color, label=name)
+        self._tuner_lines.append(line)
+        self._tuner_cur = line
+        self.ax.legend(loc="best", fontsize=8)
+        self.canvas.draw_idle()
+
+    def _on_tuner_reading(self, angle: float, power: float):
+        if not self._tuner_active:
+            return
+        if self._tuner_cur is None:
+            self._on_tuner_phase("Scan")
+        xs = list(self._tuner_cur.get_xdata()) + [angle]
+        ys = list(self._tuner_cur.get_ydata()) + [power]
+        self._tuner_cur.set_data(xs, ys)
+
+        self._tuner_all_angles.append(angle)
+        self._tuner_all_powers.append(power)
+        lo, hi = min(self._tuner_all_angles), max(self._tuner_all_angles)
+        pad = max(1.0, 0.05 * (hi - lo))
+        self.ax.set_xlim(lo - pad, hi + pad)
+        pmax = max(self._tuner_all_powers)
+        self.ax.set_ylim(0, pmax * 1.15 if pmax > 0 else 1.0)
+        self.canvas.draw_idle()
+        self.current_lbl.setText(f"{power:.2f} µW")
+
+    def _on_tuner_finished(self):
+        if not self._tuner_active:
+            return
+        self._tuner_active = False
+        self.ax.set_title(self.ax.get_title() + " — done")
+        self.canvas.draw_idle()
 
     # ── Start / Stop ──────────────────────────────────────────────────────────
 
     def _start(self):
+        if self._tuner_active:
+            self.controller.log(
+                "Power meter: tuner running — live view not started")
+            return
         if self.btt is not None:
             self.btt.powermeter()
         self._t0 = time.time()
         self._idx = 0
         self._times.fill(0)
         self._powers.fill(0)
+        self._clear_tuner_lines()
         self._line.set_data([], [])
+        self.ax.set_title("Live power")
+        self.ax.set_xlabel("Time (s)")
         self.ax.set_xlim(0, 10)
         self.ax.set_ylim(0, 100)
         self.canvas.draw_idle()

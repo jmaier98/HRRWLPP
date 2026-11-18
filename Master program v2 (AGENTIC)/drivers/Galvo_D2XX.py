@@ -24,7 +24,7 @@ def _build_frame(x_v: float, y_v: float) -> bytes:
     """
     x_v = max(min(float(x_v), _GALVO_LIMIT_V), -_GALVO_LIMIT_V)
     y_v = max(min(float(y_v), _GALVO_LIMIT_V), -_GALVO_LIMIT_V)
-    x, y = x_v, y_v
+    x, y = x_v, -y_v   # invert Y axis so commanded direction matches physical motion
     xi = int(x * 131071) + 131072
     yi = int(y * 131071) + 131072
     xb = f"{xi:018b}"

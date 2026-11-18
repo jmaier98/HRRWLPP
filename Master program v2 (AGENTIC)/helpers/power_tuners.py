@@ -15,10 +15,88 @@ N_AVG_MEDIUM      = 5     # readings averaged at each medium-scan step
 FINE_RANGE_DEG       = 2     # fine scan range, centred on medium-scan best (degrees)
 FINE_STEP_DEG        = 0.1   # fine scan step size (degrees)
 N_AVG_FINE           = 5     # readings averaged at each fine-scan step
+N_AVG_FINAL          = 10    # readings averaged at the final (target) angle when
+                             # the fine scan is skipped (probe tuning)
 SETTLE_DELAY         = 0.15  # seconds to wait after each rough/medium motor move
 FINE_SETTLE_DELAY    = 0.50  # seconds to wait between fine-scan steps
 BACKLASH_BACKOFF_DEG = 1.0   # degrees to back off before final approach (cancels motor slop)
 RAIL_SETTLE_DELAY    = 2.0   # seconds to wait after btt.clear() for rails to physically retract
+PM_SETTLE_DELAY      = 1.0   # seconds to wait after the power meter moves into place,
+                             # before a beam is unblocked, and again before measuring
+
+
+# ── Shutter discipline ────────────────────────────────────────────────────
+#
+# The sample is exposed whenever a beam is unblocked and the power meter is not
+# in the way. Every tuning routine therefore follows the same order:
+#
+#   note shutter state → close both → power meter in → wait → open the one
+#   beam under test ... tune ... close both → power meter out → wait →
+#   reopen whichever shutters were open before the routine started
+#
+# so the sample is never exposed while the power meter is moving, and comes
+# back exactly as the operator (or scan) left it, however the routine ended.
+
+def _mark_shutters(state, pump=None, probe=None):
+    """Record shutter positions in the shared state, if one was supplied."""
+    if state is None:
+        return
+    if pump is not None:
+        state.settings["pump_shutter_open"] = bool(pump)
+    if probe is not None:
+        state.settings["probe_shutter_open"] = bool(probe)
+
+
+def _close_both_shutters(shutter, state=None):
+    shutter.closePump()
+    shutter.closeProbe()
+    _mark_shutters(state, pump=False, probe=False)
+
+
+def _expose_beam_for_pm(shutter, btt, tune_pump: bool, state=None):
+    """Both shutters closed → power meter in → settle → unblock one beam."""
+    _close_both_shutters(shutter, state)
+    btt.powermeter()
+    sleep(PM_SETTLE_DELAY)          # let the rails finish moving before exposing
+    if tune_pump:
+        shutter.openPump()
+        _mark_shutters(state, pump=True)
+    else:
+        shutter.openProbe()
+        _mark_shutters(state, probe=True)
+    sleep(PM_SETTLE_DELAY)          # let the reading stabilise
+
+
+def _block_beams_and_retract(shutter, btt, state=None):
+    """Close both shutters BEFORE the power meter comes out of the beam path."""
+    try:
+        _close_both_shutters(shutter, state)
+    finally:
+        btt.clear()
+
+
+def _shutter_snapshot(state):
+    """(pump_open, probe_open) as recorded in the shared state."""
+    if state is None:
+        return False, False
+    return (bool(state.settings.get("pump_shutter_open", False)),
+            bool(state.settings.get("probe_shutter_open", False)))
+
+
+def _retract_and_restore(shutter, btt, state, snapshot):
+    """Block both beams, retract the power meter, then, once it is clear of
+    the beam path, reopen whichever shutters were open in `snapshot`."""
+    _block_beams_and_retract(shutter, btt, state)
+    was_pump_open, was_probe_open = snapshot
+    if not (was_pump_open or was_probe_open):
+        return
+    sleep(RAIL_SETTLE_DELAY)   # power meter clear of the beam path
+    if was_pump_open:
+        shutter.openPump()
+        _mark_shutters(state, pump=True)
+    if was_probe_open:
+        shutter.openProbe()
+        _mark_shutters(state, probe=True)
 
 
 # ── Noise-robust averaging ─────────────────────────────────────────────────────
@@ -112,36 +190,47 @@ class _BaseTuner(QThread):
     """
     Shared algorithm for pump / probe power tuning.
 
-    Uses three nested scans — rough, medium, fine — to converge on the target
-    power.  The final angle is chosen as the fine-scan point whose measured
-    power is closest to the target.
+    Uses nested scans — rough, medium, and (unless SKIP_FINE) fine — to
+    converge on the target power.  With SKIP_FINE the tuner parks at the
+    medium-scan best angle and skips the fine scan and the final power
+    verification.
 
     Signals
     -------
     reading_ready(angle_deg, power_uW)
         Emitted after every power measurement so the UI can update live.
+    phase_changed(str)
+        Emitted when a new scan phase begins ("Rough sweep", "Medium scan",
+        "Fine scan", "Final") so the UI can start a new plot trace.
     status_message(str)
         Human-readable progress / error messages.
     finished()
         Always emitted when the thread exits (success or failure).
     """
     reading_ready  = pyqtSignal(float, float)
+    phase_changed  = pyqtSignal(str)
     status_message = pyqtSignal(str)
     finished       = pyqtSignal()
 
-    def __init__(self, target, pm, btt, shutter, initial_wp):
+    SKIP_FINE = False   # subclasses set True to stop after the medium scan
+    TUNES_PUMP = False  # True in the pump tuner: the pump is the beam measured
+
+    def __init__(self, target, pm, btt, shutter, initial_wp, state=None):
         super().__init__()
         self.target     = target
         self.pm         = pm
         self.btt        = btt
         self.shutter    = shutter
         self.initial_wp = initial_wp
+        self.state      = state
+        # None until the run ends. Set to a message on any path that gives up
+        # early, so a caller blocking on finished() can tell success from
+        # failure — a status message alone is invisible to the agent.
+        self.error: str | None = None
+        self.final_power: float | None = None
+        self.final_angle: float | None = None
 
     # ── Subclass interface ─────────────────────────────────────────────────────
-
-    def _prep_shutters(self):
-        """Configure shutters so only the beam-under-test reaches the PM."""
-        raise NotImplementedError
 
     def _move(self, angle_deg):
         """Move the waveplate to angle_deg (absolute)."""
@@ -150,15 +239,18 @@ class _BaseTuner(QThread):
     # ── Main algorithm ─────────────────────────────────────────────────────────
 
     def run(self):
+        snapshot = _shutter_snapshot(self.state)
         try:
-            self._prep_shutters()
-            self.btt.powermeter()
-            sleep(2)                    # let rails settle and PM stabilise
+            # Both shutters shut until the power meter is physically in the
+            # beam path, then only the beam being tuned is opened.
+            _expose_beam_for_pm(self.shutter, self.btt, self.TUNES_PUMP,
+                                self.state)
 
             # ── Phase 1: rough sweep to map the power curve ────────────────────
             self.status_message.emit(
                 f"Rough sweep {SWEEP_RANGE_DEG}° to map power curve..."
             )
+            self.phase_changed.emit("Rough sweep")
             angles, powers = [], []
             n_steps = int(SWEEP_RANGE_DEG / SWEEP_STEP_DEG) + 1
             for i in range(n_steps):
@@ -179,26 +271,27 @@ class _BaseTuner(QThread):
 
             # ── Phase 3: out-of-range check ────────────────────────────────────
             if self.target < P_min:
-                self.status_message.emit(
+                self.error = (
                     f"OUT OF RANGE: target {self.target:.2f} uW is below the "
                     f"minimum achievable power ({P_min:.2f} uW). "
                     f"Check beam alignment or increase source power."
                 )
+                self.status_message.emit(self.error)
                 return
             if self.target > P_max:
-                self.status_message.emit(
+                self.error = (
                     f"OUT OF RANGE: target {self.target:.2f} uW exceeds the "
                     f"maximum achievable power ({P_max:.2f} uW). "
                     f"Reduce the target or check the optical path."
                 )
+                self.status_message.emit(self.error)
                 return
 
             # Rough best angle from fit
             rough_best = _best_angle(self.target, C, D, E, self.initial_wp)
             if rough_best is None:
-                self.status_message.emit(
-                    "Fit error: could not invert model to find target angle."
-                )
+                self.error = "Fit error: could not invert model to find target angle."
+                self.status_message.emit(self.error)
                 return
             self.status_message.emit(f"Rough best angle: {rough_best:.2f} deg")
 
@@ -206,6 +299,7 @@ class _BaseTuner(QThread):
             self.status_message.emit(
                 f"Medium scan +/-{MEDIUM_RANGE_DEG / 2:.0f} deg around {rough_best:.2f} deg..."
             )
+            self.phase_changed.emit("Medium scan")
             med_start = rough_best - MEDIUM_RANGE_DEG / 2
             med_n = int(MEDIUM_RANGE_DEG / MEDIUM_STEP_DEG) + 1
             med_angles, med_powers = [], []
@@ -231,10 +325,30 @@ class _BaseTuner(QThread):
                 med_best_angle = med_angles[med_best_idx]
             self.status_message.emit(f"Medium best angle: {med_best_angle:.2f} deg")
 
+            if self.SKIP_FINE:
+                # Skip the fine scan: park at the medium best angle (backlash
+                # cancellation) and take a quick averaged reading there.
+                self._move(med_best_angle - BACKLASH_BACKOFF_DEG)
+                sleep(SETTLE_DELAY)
+                self._move(med_best_angle)
+                sleep(SETTLE_DELAY)
+                self.phase_changed.emit("Final")
+                final_power = _avg_reading(self.pm, N_AVG_FINAL)
+                err      = self.target - final_power
+                frac_err = 100.0 * err / self.target if self.target != 0 else float('nan')
+                self.status_message.emit(
+                    f"Done. Power = {final_power:.2f} uW  "
+                    f"(target {self.target:.2f} uW, error {frac_err:+.1f}%)"
+                )
+                self.reading_ready.emit(med_best_angle, final_power)
+                self.final_angle, self.final_power = med_best_angle, final_power
+                return
+
             # ── Phase 5: fine scan centred on medium best ──────────────────────
             self.status_message.emit(
                 f"Fine scan +/-{FINE_RANGE_DEG / 2:.2f} deg around {med_best_angle:.2f} deg..."
             )
+            self.phase_changed.emit("Fine scan")
             fine_start = med_best_angle - FINE_RANGE_DEG / 2
             fine_n = int(FINE_RANGE_DEG / FINE_STEP_DEG) + 1
             fine_angles, fine_powers = [], []
@@ -266,6 +380,7 @@ class _BaseTuner(QThread):
             sleep(FINE_SETTLE_DELAY)
 
             # 30-reading average for accurate final power
+            self.phase_changed.emit("Final")
             final_power = _avg_reading(self.pm, 30)
             err      = self.target - final_power
             frac_err = 100.0 * err / self.target if self.target != 0 else float('nan')
@@ -274,54 +389,62 @@ class _BaseTuner(QThread):
                 f"(target {self.target:.2f} uW, error {frac_err:+.1f}%)"
             )
             self.reading_ready.emit(fine_best_angle, final_power)
+            self.final_angle, self.final_power = fine_best_angle, final_power
 
         except Exception as exc:
-            self.status_message.emit(f"Tuner error: {exc}")
+            self.error = f"Tuner error: {exc}"
+            self.status_message.emit(self.error)
 
         finally:
-            self.btt.clear()
+            # Shutters first, power meter second: never uncover the sample
+            # while a beam is still live, however the run ended. Then put the
+            # shutters back the way they were before the tune.
+            _retract_and_restore(self.shutter, self.btt, self.state, snapshot)
             self.finished.emit()
 
 
 # ── Concrete tuner classes ─────────────────────────────────────────────────────
 
 class ProbeTuner(_BaseTuner):
-    """Tunes the probe power by rotating the probe polarizer (rot_3)."""
+    """Tunes the probe power by rotating the probe waveplate (rot_3)."""
 
-    def _prep_shutters(self):
-        self.shutter.closePump()   # block pump so only probe reaches PM
-        self.shutter.openProbe()
+    TUNES_PUMP = False
 
     def _move(self, angle_deg):
         self.btt.rot_3(angle_deg, DEFAULT_FEEDRATE)
 
 
 class PumpTuner(_BaseTuner):
-    """Tunes the pump power by rotating the pump polarizer (rot_4)."""
+    """Tunes the pump power by rotating the pump waveplate (rot_1)."""
 
-    def _prep_shutters(self):
-        self.shutter.openPump()    # let pump reach PM
-        self.shutter.closeProbe()  # block probe so only pump is measured
+    TUNES_PUMP = True
 
     def _move(self, angle_deg):
-        self.btt.rot_4(angle_deg, DEFAULT_FEEDRATE)
+        self.btt.rot_1(angle_deg, DEFAULT_FEEDRATE)
 
 
 # ── Blocking (synchronous) tuner functions for use in scan worker threads ──────
 #
-# These run the same three-level scan algorithm as _BaseTuner but without Qt
+# These run the same scan algorithm as _BaseTuner but without Qt
 # signals, so they can be called directly from any background QThread
 # (e.g. scan workers).
 # status_cb: optional callable(str) for progress messages (e.g. print).
 # Raises RuntimeError if the target is out of the achievable power range.
-# After tuning both shutters are restored to open so scanning can continue.
+# They run with both shutters closed except while the power meter is in the
+# beam path, and put the caller's shutter state back once it is clear.
 
 def _blocking_tune(target, pm, btt, shutter, move_fn, state_wp_key, status_cb,
-                   tune_pump: bool = False):
-    """Shared three-level scan implementation for both pump and probe blocking tuners.
+                   tune_pump: bool = False, skip_fine: bool = False,
+                   state=None):
+    """Shared scan implementation for both pump and probe blocking tuners.
 
     tune_pump=True  → open pump shutter, close probe (measuring pump beam)
     tune_pump=False → close pump shutter, open probe (measuring probe beam)
+    skip_fine=True  → skip the fine scan: park at the medium-scan best angle
+                      and take an N_AVG_FINAL-reading averaged measurement
+                      there; returns (angle, measured_power).
+    The shutters are put back the way the caller had them once the power
+    meter is out of the beam path.
     """
     def emit(msg):
         if status_cb:
@@ -329,15 +452,18 @@ def _blocking_tune(target, pm, btt, shutter, move_fn, state_wp_key, status_cb,
         else:
             print(f"[PowerTuner] {msg}")
 
-    if tune_pump:
-        shutter.openPump()
-        shutter.closeProbe()
-    else:
-        shutter.closePump()
-        shutter.openProbe()
-    btt.powermeter()
-    sleep(2)
+    snapshot = _shutter_snapshot(state)
+    try:
+        _expose_beam_for_pm(shutter, btt, tune_pump, state)
+        return _blocking_tune_core(target, pm, btt, move_fn, state_wp_key,
+                                   emit, skip_fine)
+    finally:
+        _retract_and_restore(shutter, btt, state, snapshot)
 
+
+def _blocking_tune_core(target, pm, btt, move_fn, state_wp_key, emit, skip_fine):
+    """The scan itself. Assumes the power meter is in place and exactly the
+    beam under test is unblocked; the caller owns shutter and rail cleanup."""
     initial_wp = float(state_wp_key())
 
     # ── Phase 1: rough sweep ────────────────────────────────────────────────
@@ -358,9 +484,6 @@ def _blocking_tune(target, pm, btt, shutter, move_fn, state_wp_key, status_cb,
     emit(f"Fit: P_min={P_min:.2f} uW, P_max={P_max:.2f} uW, target={target:.2f} uW")
 
     if target < P_min or target > P_max:
-        btt.clear()
-        shutter.openPump()
-        shutter.openProbe()
         raise RuntimeError(
             f"Power target {target:.2f} uW is out of achievable range "
             f"[{P_min:.2f}, {P_max:.2f}] uW"
@@ -368,9 +491,6 @@ def _blocking_tune(target, pm, btt, shutter, move_fn, state_wp_key, status_cb,
 
     rough_best = _best_angle(target, C, D, E, initial_wp)
     if rough_best is None:
-        btt.clear()
-        shutter.openPump()
-        shutter.openProbe()
         raise RuntimeError("Could not invert Malus fit to find target angle")
     emit(f"Rough best angle: {rough_best:.2f} deg")
 
@@ -398,6 +518,20 @@ def _blocking_tune(target, pm, btt, shutter, move_fn, state_wp_key, status_cb,
                              key=lambda i: abs(med_powers[i] - target))
         med_best_angle = med_angles[med_best_idx]
     emit(f"Medium best angle: {med_best_angle:.2f} deg")
+
+    if skip_fine:
+        # Skip the fine scan: park at the medium best angle (backlash
+        # cancellation) and take a quick averaged reading there.
+        move_fn(med_best_angle - BACKLASH_BACKOFF_DEG)
+        sleep(SETTLE_DELAY)
+        move_fn(med_best_angle)
+        sleep(SETTLE_DELAY)
+        final_power = _avg_reading(pm, N_AVG_FINAL)
+        err      = target - final_power
+        frac_err = 100.0 * err / target if target != 0 else float('nan')
+        emit(f"Done. Power = {final_power:.2f} uW "
+             f"(target {target:.2f} uW, error {frac_err:+.1f}%)")
+        return med_best_angle, final_power
 
     # ── Phase 4: fine scan ──────────────────────────────────────────────────
     emit(f"Fine scan +/-{FINE_RANGE_DEG / 2:.2f} deg around {med_best_angle:.2f} deg...")
@@ -434,11 +568,6 @@ def _blocking_tune(target, pm, btt, shutter, move_fn, state_wp_key, status_cb,
     err      = target - final_power
     frac_err = 100.0 * err / target if target != 0 else float('nan')
     emit(f"Done. Power = {final_power:.2f} uW (error {frac_err:+.1f}%)")
-
-    btt.clear()
-    sleep(RAIL_SETTLE_DELAY)
-    shutter.openPump()
-    shutter.openProbe()
     return fine_best_angle, final_power
 
 
@@ -446,8 +575,8 @@ def tune_pump_power_blocking(target, pm, btt, shutter, state, status_cb=None):
     """
     Blocking pump power tuner for use inside scan worker threads.
 
-    Performs rough / medium / fine scans of the pump HWP (rot_3) and parks
-    at the angle whose measured power is closest to target.
+    Performs rough / medium / fine scans of the pump waveplate (rot_1) and
+    parks at the angle whose measured power is closest to target.
 
     Parameters
     ----------
@@ -455,7 +584,7 @@ def tune_pump_power_blocking(target, pm, btt, shutter, state, status_cb=None):
     pm       : PowerMeter instance
     btt      : BTT instance
     shutter  : Shutter instance
-    state    : MicroscopeState  (reads/writes rot_4_angle, pump_power)
+    state    : MicroscopeState  (reads/writes rot_1_angle, pump_power)
     status_cb: optional callable(str) for progress messages
 
     Returns
@@ -467,15 +596,16 @@ def tune_pump_power_blocking(target, pm, btt, shutter, state, status_cb=None):
     RuntimeError if target power is out of the achievable range.
     """
     def move(angle):
-        btt.rot_4(angle, DEFAULT_FEEDRATE)   # rot_4 = pump polarizer
-        state.settings["rot_4_angle"] = angle
+        btt.rot_1(angle, DEFAULT_FEEDRATE)   # rot_1 = pump waveplate
+        state.settings["rot_1_angle"] = angle
 
     angle, power = _blocking_tune(
         target, pm, btt, shutter,
         move_fn=move,
-        state_wp_key=lambda: state.settings.get("rot_4_angle", 0.0),
+        state_wp_key=lambda: state.settings.get("rot_1_angle", 0.0),
         status_cb=status_cb,
         tune_pump=True,
+        state=state,
     )
     state.settings["pump_power"] = power
     return angle, power
@@ -485,8 +615,8 @@ def tune_probe_power_blocking(target, pm, btt, shutter, state, status_cb=None):
     """
     Blocking probe power tuner for use inside scan worker threads.
 
-    Performs rough / medium / fine scans of the probe polarizer (rot_3) and parks
-    at the angle whose measured power is closest to target.
+    Performs rough / medium / fine scans of the probe waveplate (rot_3) and
+    parks at the angle whose measured power is closest to target.
 
     Parameters
     ----------
@@ -506,7 +636,7 @@ def tune_probe_power_blocking(target, pm, btt, shutter, state, status_cb=None):
     RuntimeError if target power is out of the achievable range.
     """
     def move(angle):
-        btt.rot_3(angle, DEFAULT_FEEDRATE)   # rot_3 = probe polarizer
+        btt.rot_3(angle, DEFAULT_FEEDRATE)   # rot_3 = probe waveplate
         state.settings["rot_3_angle"] = angle
 
     angle, power = _blocking_tune(
@@ -514,6 +644,7 @@ def tune_probe_power_blocking(target, pm, btt, shutter, state, status_cb=None):
         move_fn=move,
         state_wp_key=lambda: state.settings.get("rot_3_angle", 0.0),
         status_cb=status_cb,
+        state=state,
     )
     state.settings["probe_power"] = power
     return angle, power
@@ -523,16 +654,23 @@ def tune_probe_power_blocking(target, pm, btt, shutter, state, status_cb=None):
 
 class ProbeCalibrationScanner(QThread):
     """
-    Sweeps the probe HWP over 90° in FAST_SCAN_STEP_DEG steps, fits Malus's law,
+    Sweeps the probe waveplate (rot_3) over 90° in FAST_SCAN_STEP_DEG steps,
+    fits Malus's law,
     and stores the coefficients in state.settings so that set_fast_probe_power_blocking
     can set probe power without using the power meter.
 
     Signals
     -------
+    reading_ready(angle_deg, power_uW)
+        Emitted after every power measurement so the UI can plot live.
+    phase_changed(str)
+        Emitted once when the sweep begins (matches _BaseTuner's interface).
     status_message(str)
     calibration_done(C, D, E, start_angle)
     finished()
     """
+    reading_ready    = pyqtSignal(float, float)
+    phase_changed    = pyqtSignal(str)
     status_message   = pyqtSignal(str)
     calibration_done = pyqtSignal(float, float, float, float)
     finished         = pyqtSignal()
@@ -545,27 +683,28 @@ class ProbeCalibrationScanner(QThread):
         self.state   = state
 
     def run(self):
+        snapshot = _shutter_snapshot(self.state)
         try:
-            self.shutter.closePump()
-            self.shutter.openProbe()
-            self.btt.powermeter()
-            sleep(2)
+            _expose_beam_for_pm(self.shutter, self.btt, tune_pump=False,
+                                state=self.state)
 
             start_angle = float(self.state.settings.get("rot_3_angle", 0.0))
             self.status_message.emit(
                 f"Calibration sweep: 90° from {start_angle:.1f}° in "
                 f"{FAST_SCAN_STEP_DEG}° steps…"
             )
+            self.phase_changed.emit("Calibration sweep")
 
             n_steps = int(SWEEP_RANGE_DEG / FAST_SCAN_STEP_DEG) + 1
             angles, powers = [], []
             for i in range(n_steps):
                 angle = start_angle + i * FAST_SCAN_STEP_DEG
-                self.btt.rot_3(angle, DEFAULT_FEEDRATE)   # rot_3 = probe polarizer
+                self.btt.rot_3(angle, DEFAULT_FEEDRATE)   # rot_3 = probe waveplate
                 sleep(SETTLE_DELAY)
                 p = _avg_reading(self.pm, N_AVG_COARSE)
                 angles.append(angle)
                 powers.append(p)
+                self.reading_ready.emit(angle, p)
 
             C, D, E = _fit_malus(angles, powers)
             P_min, P_max = _fit_range(C, D, E)
@@ -583,7 +722,7 @@ class ProbeCalibrationScanner(QThread):
         except Exception as exc:
             self.status_message.emit(f"Calibration error: {exc}")
         finally:
-            self.btt.clear()
+            _retract_and_restore(self.shutter, self.btt, self.state, snapshot)
             self.finished.emit()
 
 
@@ -636,6 +775,6 @@ def set_fast_probe_power_blocking(target, btt, state, status_cb=None):
         raise RuntimeError("Could not invert Malus fit to find target angle.")
 
     emit(f"Fast probe: {angle:.2f} deg -> {target:.2f} uW")
-    btt.rot_3(angle, DEFAULT_FEEDRATE)   # rot_3 = probe polarizer
+    btt.rot_3(angle, DEFAULT_FEEDRATE)   # rot_3 = probe waveplate
     state.settings["rot_3_angle"] = angle
     state.settings["probe_power"] = target

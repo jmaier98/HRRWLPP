@@ -54,10 +54,18 @@ class BTT:
         self.send_gcode(1, f'G1 Z{dz} F{feed:.1f}')
 
     def focus(self, f_pos):
-        current_focus = self.state.settings["focus_position"] 
-        self.state.settings["focus_position"] =  f_pos
+        # The objective stage only accepts relative moves, so the stored
+        # position is the sole record of where it actually is. Persist it on
+        # every move so the position survives a restart (or a crash).
+        f_pos = float(f_pos)
+        current_focus = float(self.state.settings.get("focus_position", 0.0))
         dz = f_pos - current_focus
         self.send_gcode(1, f'G1 E{dz} F{3000}')
+        self.state.settings["focus_position"] = f_pos
+        try:
+            self.state.save()
+        except Exception as e:
+            print(f"Warning: could not persist focus_position: {e}")
 
     def rotZ(self, dz, feed):
         self.send_gcode(1, f'G1 E{dz} F{feed:.1f}')

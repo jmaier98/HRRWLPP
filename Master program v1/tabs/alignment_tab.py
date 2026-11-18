@@ -153,8 +153,10 @@ class _AlignmentWorker(QThread):
     
     def __init__(
         self,
-        start_x: float,
-        start_y: float,
+        horiz_start_x: float,
+        horiz_start_y: float,
+        vert_start_x: float,
+        vert_start_y: float,
         horiz_distance: float,
         vert_distance: float,
         n_horiz_points: int,
@@ -165,11 +167,14 @@ class _AlignmentWorker(QThread):
         measure_fn: Callable[[], float],
         stop_flag_ref: List[bool],
         wait_s: float = 0.05,
-        fit_mode: str = "sigmoid",  # "sigmoid" or "double_sigmoid"
+        horiz_fit_mode: str = "sigmoid",
+        vert_fit_mode: str = "sigmoid",
     ):
         super().__init__()
-        self.start_x = start_x
-        self.start_y = start_y
+        self.horiz_start_x = horiz_start_x
+        self.horiz_start_y = horiz_start_y
+        self.vert_start_x = vert_start_x
+        self.vert_start_y = vert_start_y
         self.horiz_distance = horiz_distance
         self.vert_distance = vert_distance
         self.n_horiz_points = max(2, int(n_horiz_points))
@@ -180,7 +185,8 @@ class _AlignmentWorker(QThread):
         self.measure = measure_fn
         self.stop_flag_ref = stop_flag_ref
         self.wait_s = wait_s
-        self.fit_mode = fit_mode
+        self.horiz_fit_mode = horiz_fit_mode
+        self.vert_fit_mode = vert_fit_mode
         
     def run(self):
         try:
@@ -191,49 +197,49 @@ class _AlignmentWorker(QThread):
             
             # Generate horizontal scan positions
             if self.horiz_left_to_right:
-                x_start = self.start_x
-                x_end = self.start_x + self.horiz_distance
+                x_start = self.horiz_start_x
+                x_end = self.horiz_start_x + self.horiz_distance
             else:
-                x_start = self.start_x
-                x_end = self.start_x - self.horiz_distance
-            
+                x_start = self.horiz_start_x
+                x_end = self.horiz_start_x - self.horiz_distance
+
             horiz_xs = np.linspace(x_start, x_end, self.n_horiz_points)
-            
+
             # Perform horizontal scan
             x_center, trace_x, trace_y, fitted_y = self._scan_along_axis(
-                horiz_xs, self.start_y, "horizontal"
+                horiz_xs, self.horiz_start_y, "horizontal", self.horiz_fit_mode
             )
-            
+
             self.progress.emit("horizontal", x_center, trace_x, trace_y, fitted_y)
-            
-            # Return to start position
-            self.set_galvo(self.start_x, self.start_y)
+
+            # Return to horizontal start position
+            self.set_galvo(self.horiz_start_x, self.horiz_start_y)
             time.sleep(self.wait_s * 2)
-            
+
             # =============== VERTICAL SCAN ===============
             if self.stop_flag_ref[0]:
                 self.finished.emit(True, "Scan stopped by user.")
                 return
-            
+
             # Generate vertical scan positions
             if self.vert_bottom_to_top:
-                y_start = self.start_y
-                y_end = self.start_y + self.vert_distance
+                y_start = self.vert_start_y
+                y_end = self.vert_start_y + self.vert_distance
             else:
-                y_start = self.start_y
-                y_end = self.start_y - self.vert_distance
-            
+                y_start = self.vert_start_y
+                y_end = self.vert_start_y - self.vert_distance
+
             vert_ys = np.linspace(y_start, y_end, self.n_vert_points)
-            
+
             # Perform vertical scan
             y_center, trace_y_pos, trace_y_vals, fitted_y_curve = self._scan_along_axis(
-                vert_ys, self.start_x, "vertical"
+                vert_ys, self.vert_start_x, "vertical", self.vert_fit_mode
             )
-            
+
             self.progress.emit("vertical", y_center, trace_y_pos, trace_y_vals, fitted_y_curve)
-            
-            # Return to start position
-            self.set_galvo(self.start_x, self.start_y)
+
+            # Return to vertical start position
+            self.set_galvo(self.vert_start_x, self.vert_start_y)
             time.sleep(self.wait_s * 2)
             
             msg = f"Alignment complete. X center: {x_center:.4f}, Y center: {y_center:.4f}"
@@ -257,48 +263,48 @@ class _AlignmentWorker(QThread):
             
             # Generate horizontal scan positions
             if self.horiz_left_to_right:
-                x_start = self.start_x
-                x_end = self.start_x + self.horiz_distance
+                x_start = self.horiz_start_x
+                x_end = self.horiz_start_x + self.horiz_distance
             else:
-                x_start = self.start_x
-                x_end = self.start_x - self.horiz_distance
-            
+                x_start = self.horiz_start_x
+                x_end = self.horiz_start_x - self.horiz_distance
+
             horiz_xs = np.linspace(x_start, x_end, self.n_horiz_points)
-            
+
             # Perform horizontal scan
             x_center, trace_x, trace_y, fitted_y = self._scan_along_axis(
-                horiz_xs, self.start_y, "horizontal"
+                horiz_xs, self.horiz_start_y, "horizontal", self.horiz_fit_mode
             )
-            
+
             self.progress.emit("horizontal", x_center, trace_x, trace_y, fitted_y)
-            
-            # Return to start position
-            self.set_galvo(self.start_x, self.start_y)
+
+            # Return to horizontal start position
+            self.set_galvo(self.horiz_start_x, self.horiz_start_y)
             time.sleep(self.wait_s * 2)
-            
+
             # =============== VERTICAL SCAN ===============
             if self.stop_flag_ref[0]:
                 return True, "Scan stopped by user."
-            
+
             # Generate vertical scan positions
             if self.vert_bottom_to_top:
-                y_start = self.start_y
-                y_end = self.start_y + self.vert_distance
+                y_start = self.vert_start_y
+                y_end = self.vert_start_y + self.vert_distance
             else:
-                y_start = self.start_y
-                y_end = self.start_y - self.vert_distance
-            
+                y_start = self.vert_start_y
+                y_end = self.vert_start_y - self.vert_distance
+
             vert_ys = np.linspace(y_start, y_end, self.n_vert_points)
-            
+
             # Perform vertical scan
             y_center, trace_y_pos, trace_y_vals, fitted_y_curve = self._scan_along_axis(
-                vert_ys, self.start_x, "vertical"
+                vert_ys, self.vert_start_x, "vertical", self.vert_fit_mode
             )
-            
+
             self.progress.emit("vertical", y_center, trace_y_pos, trace_y_vals, fitted_y_curve)
-            
-            # Return to start position
-            self.set_galvo(self.start_x, self.start_y)
+
+            # Return to vertical start position
+            self.set_galvo(self.vert_start_x, self.vert_start_y)
             time.sleep(self.wait_s * 2)
             
             msg = f"Alignment complete. X center: {x_center:.4f}, Y center: {y_center:.4f}"
@@ -308,7 +314,7 @@ class _AlignmentWorker(QThread):
             error_msg = f"Unexpected error: {e}"
             return False, error_msg
     
-    def _scan_along_axis(self, positions: np.ndarray, fixed_coord: float, direction: str) -> Tuple[Optional[float], np.ndarray, np.ndarray, np.ndarray]:
+    def _scan_along_axis(self, positions: np.ndarray, fixed_coord: float, direction: str, fit_mode: str = "sigmoid") -> Tuple[Optional[float], np.ndarray, np.ndarray, np.ndarray]:
         """
         Perform one 1D scan along an axis.
         Returns: (center_position, positions, measured_values, fitted_values)
@@ -339,7 +345,7 @@ class _AlignmentWorker(QThread):
 
             # Fit and extract center
             pos_fine = np.linspace(np.min(positions), np.max(positions), 200)
-            if self.fit_mode == "double_sigmoid":
+            if fit_mode == "double_sigmoid":
                 center_pos, fit_info = fit_double_sigmoid_and_extract_center(positions, y_data)
                 if fit_info is not None:
                     fitted_y = double_sigmoid(pos_fine, fit_info['x1'], fit_info['x2'],
@@ -395,15 +401,19 @@ class AlignmentTab(QWidget):
         dv_norm = QDoubleValidator(-1.0, 1.0, 9, self)
         iv_pos = QIntValidator(1, 10_000_000, self)
         
-        # Starting position
-        self.start_x = QLineEdit("0.0")
-        self.start_x.setValidator(dv_norm)
-        self.start_y = QLineEdit("0.0")
-        self.start_y.setValidator(dv_norm)
-        
-        # Scan distances
+        # Horizontal scan starting position and distance
+        self.horiz_start_x = QLineEdit("0.0")
+        self.horiz_start_x.setValidator(dv_norm)
+        self.horiz_start_y = QLineEdit("0.0")
+        self.horiz_start_y.setValidator(dv_norm)
         self.horiz_distance = QLineEdit("0.1")
         self.horiz_distance.setValidator(dv)
+
+        # Vertical scan starting position and distance
+        self.vert_start_x = QLineEdit("0.0")
+        self.vert_start_x.setValidator(dv_norm)
+        self.vert_start_y = QLineEdit("0.0")
+        self.vert_start_y.setValidator(dv_norm)
         self.vert_distance = QLineEdit("0.1")
         self.vert_distance.setValidator(dv)
         
@@ -423,17 +433,27 @@ class AlignmentTab(QWidget):
         self.wait_ms = QLineEdit("50")
         self.wait_ms.setValidator(QIntValidator(0, 1_000_000, self))
 
-        # Fit mode selector
-        self.fit_mode_combo = QComboBox()
-        self.fit_mode_combo.addItem("Single Sigmoid (edge)", "sigmoid")
-        self.fit_mode_combo.addItem("Double Sigmoid / Hat (thin electrode)", "double_sigmoid")
+        # Fit mode selectors (separate for horizontal and vertical)
+        self.horiz_fit_mode_combo = QComboBox()
+        self.horiz_fit_mode_combo.addItem("Single Sigmoid (edge)", "sigmoid")
+        self.horiz_fit_mode_combo.addItem("Double Sigmoid / Hat (thin electrode)", "double_sigmoid")
+
+        self.vert_fit_mode_combo = QComboBox()
+        self.vert_fit_mode_combo.addItem("Single Sigmoid (edge)", "sigmoid")
+        self.vert_fit_mode_combo.addItem("Double Sigmoid / Hat (thin electrode)", "double_sigmoid")
 
         # Form layout
-        form.addRow("Start X (galvo):", self.start_x)
-        form.addRow("Start Y (galvo):", self.start_y)
+        form.addRow(QLabel("— Horizontal Scan —"))
+        form.addRow("H Start X (galvo):", self.horiz_start_x)
+        form.addRow("H Start Y (galvo):", self.horiz_start_y)
+        form.addRow("H Distance:", self.horiz_distance)
+        form.addRow("H Fit mode:", self.horiz_fit_mode_combo)
         form.addRow("", QLabel(""))  # spacer
-        form.addRow("Horizontal distance:", self.horiz_distance)
-        form.addRow("Vertical distance:", self.vert_distance)
+        form.addRow(QLabel("— Vertical Scan —"))
+        form.addRow("V Start X (galvo):", self.vert_start_x)
+        form.addRow("V Start Y (galvo):", self.vert_start_y)
+        form.addRow("V Distance:", self.vert_distance)
+        form.addRow("V Fit mode:", self.vert_fit_mode_combo)
         form.addRow("", QLabel(""))  # spacer
         form.addRow("# Horizontal points:", self.n_horiz_points)
         form.addRow("# Vertical points:", self.n_vert_points)
@@ -442,8 +462,6 @@ class AlignmentTab(QWidget):
         form.addRow(self.vert_bottom_to_top)
         form.addRow("", QLabel(""))  # spacer
         form.addRow("Wait (ms):", self.wait_ms)
-        form.addRow("", QLabel(""))  # spacer
-        form.addRow("Fit mode:", self.fit_mode_combo)
         
         # Buttons
         btn_row = QHBoxLayout()
@@ -511,8 +529,10 @@ class AlignmentTab(QWidget):
     def _find_feature(self):
         """Find the current feature position."""
         try:
-            start_x = float(self.start_x.text())
-            start_y = float(self.start_y.text())
+            horiz_start_x = float(self.horiz_start_x.text())
+            horiz_start_y = float(self.horiz_start_y.text())
+            vert_start_x = float(self.vert_start_x.text())
+            vert_start_y = float(self.vert_start_y.text())
             horiz_distance = float(self.horiz_distance.text())
             vert_distance = float(self.vert_distance.text())
             n_horiz_points = int(self.n_horiz_points.text())
@@ -523,43 +543,45 @@ class AlignmentTab(QWidget):
         except ValueError:
             QMessageBox.warning(self, "Input Error", "Invalid input values.")
             return
-        
+
         if not self.galvo or not self.lockin:
             QMessageBox.critical(self, "Setup Error", "Galvo or Lock-in not available.")
             return
-        
+
         # Clear plots
         self.ax_top.clear()
         self.ax_top.set_title("Horizontal Scan")
         self.ax_top.set_xlabel("Galvo X")
         self.ax_top.set_ylabel("Lock-in X")
         self.canvas_top.draw_idle()
-        
+
         self.ax_bottom.clear()
         self.ax_bottom.set_title("Vertical Scan")
         self.ax_bottom.set_xlabel("Galvo Y")
         self.ax_bottom.set_ylabel("Lock-in X")
         self.canvas_bottom.draw_idle()
-        
+
         # Reset runtime state
         self._stop_flag[0] = False
         self._horizontal_data = None
         self._vertical_data = None
-        self._current_start_x = start_x
-        self._current_start_y = start_y
+        self._current_start_x = horiz_start_x
+        self._current_start_y = vert_start_y
         self._update_original = False  # Always false for find feature
-        
+
         # Define functions
         def set_galvo(x, y):
             self.galvo.move(x, y)
-        
+
         def measure():
             return self.lockin.read_PD()
-        
+
         # Create worker
         self._worker = _AlignmentWorker(
-            start_x=start_x,
-            start_y=start_y,
+            horiz_start_x=horiz_start_x,
+            horiz_start_y=horiz_start_y,
+            vert_start_x=vert_start_x,
+            vert_start_y=vert_start_y,
             horiz_distance=horiz_distance,
             vert_distance=vert_distance,
             n_horiz_points=n_horiz_points,
@@ -570,7 +592,8 @@ class AlignmentTab(QWidget):
             measure_fn=measure,
             stop_flag_ref=self._stop_flag,
             wait_s=wait_ms / 1000.0,
-            fit_mode=self.fit_mode_combo.currentData(),
+            horiz_fit_mode=self.horiz_fit_mode_combo.currentData(),
+            vert_fit_mode=self.vert_fit_mode_combo.currentData(),
         )
 
         # Disable buttons during scan
@@ -616,8 +639,10 @@ class AlignmentTab(QWidget):
     def _run_alignment_scan(self, update_original: bool):
         """Run the alignment scan."""
         try:
-            start_x = float(self.start_x.text())
-            start_y = float(self.start_y.text())
+            horiz_start_x = float(self.horiz_start_x.text())
+            horiz_start_y = float(self.horiz_start_y.text())
+            vert_start_x = float(self.vert_start_x.text())
+            vert_start_y = float(self.vert_start_y.text())
             horiz_distance = float(self.horiz_distance.text())
             vert_distance = float(self.vert_distance.text())
             n_horiz_points = int(self.n_horiz_points.text())
@@ -628,44 +653,46 @@ class AlignmentTab(QWidget):
         except ValueError:
             QMessageBox.warning(self, "Input Error", "Invalid input values.")
             return
-        
+
         if not self.galvo or not self.lockin:
             QMessageBox.critical(self, "Setup Error", "Galvo or Lock-in not available.")
             return
-        
+
         # Clear plots
         self.ax_top.clear()
         self.ax_top.set_title("Horizontal Scan")
         self.ax_top.set_xlabel("Galvo X")
         self.ax_top.set_ylabel("Lock-in X")
         self.canvas_top.draw_idle()
-        
+
         self.ax_bottom.clear()
         self.ax_bottom.set_title("Vertical Scan")
         self.ax_bottom.set_xlabel("Galvo Y")
         self.ax_bottom.set_ylabel("Lock-in X")
         self.canvas_bottom.draw_idle()
-        
+
         # Reset runtime state
         self._stop_flag[0] = False
         self._horizontal_data = None
         self._vertical_data = None
-        self._current_start_x = start_x
-        self._current_start_y = start_y
+        self._current_start_x = horiz_start_x
+        self._current_start_y = vert_start_y
         self._update_original = update_original
         self.info_lbl.setText("")
-        
+
         # Define functions
         def set_galvo(x, y):
             self.galvo.move(x, y)
-        
+
         def measure():
             return self.lockin.read_PD()
-        
+
         # Start worker
         self._worker = _AlignmentWorker(
-            start_x=start_x,
-            start_y=start_y,
+            horiz_start_x=horiz_start_x,
+            horiz_start_y=horiz_start_y,
+            vert_start_x=vert_start_x,
+            vert_start_y=vert_start_y,
             horiz_distance=horiz_distance,
             vert_distance=vert_distance,
             n_horiz_points=n_horiz_points,
@@ -676,7 +703,8 @@ class AlignmentTab(QWidget):
             measure_fn=measure,
             stop_flag_ref=self._stop_flag,
             wait_s=wait_ms / 1000.0,
-            fit_mode=self.fit_mode_combo.currentData(),
+            horiz_fit_mode=self.horiz_fit_mode_combo.currentData(),
+            vert_fit_mode=self.vert_fit_mode_combo.currentData(),
         )
         
         self._worker.progress.connect(self._on_progress, Qt.ConnectionType.QueuedConnection)
@@ -706,11 +734,10 @@ class AlignmentTab(QWidget):
             self._vertical_data = scan_data
             self._update_vertical_plot()
     
-    def _fit_label(self):
-        mode = self.fit_mode_combo.currentData()
+    def _fit_label(self, mode: str) -> str:
         return "Hat fit" if mode == "double_sigmoid" else "Sigmoid fit"
 
-    def _plot_scan(self, ax, canvas, x_label, title_base, center_pos, trace_pos, trace_vals, fitted_vals):
+    def _plot_scan(self, ax, canvas, x_label, title_base, center_pos, trace_pos, trace_vals, fitted_vals, fit_mode: str = "sigmoid"):
         """Shared helper for rendering a scan result onto an axis."""
         ax.clear()
         title = f"{title_base} - Center: {center_pos:.4f}" if center_pos is not None else title_base
@@ -723,7 +750,7 @@ class AlignmentTab(QWidget):
 
         if len(fitted_vals) > 0 and not np.all(np.isnan(fitted_vals)):
             pos_fine = np.linspace(np.min(trace_pos), np.max(trace_pos), len(fitted_vals))
-            ax.plot(pos_fine, fitted_vals, 'r--', label=self._fit_label(), linewidth=2)
+            ax.plot(pos_fine, fitted_vals, 'r--', label=self._fit_label(fit_mode), linewidth=2)
 
             if center_pos is not None:
                 # Mark center at the interpolated fit value
@@ -741,7 +768,8 @@ class AlignmentTab(QWidget):
             return
         center_pos, trace_pos, trace_vals, fitted_vals = self._horizontal_data
         self._plot_scan(self.ax_top, self.canvas_top, "Galvo X", "Horizontal Scan",
-                        center_pos, trace_pos, trace_vals, fitted_vals)
+                        center_pos, trace_pos, trace_vals, fitted_vals,
+                        fit_mode=self.horiz_fit_mode_combo.currentData())
 
     def _update_vertical_plot(self):
         """Update the vertical scan plot."""
@@ -749,7 +777,8 @@ class AlignmentTab(QWidget):
             return
         center_pos, trace_pos, trace_vals, fitted_vals = self._vertical_data
         self._plot_scan(self.ax_bottom, self.canvas_bottom, "Galvo Y", "Vertical Scan",
-                        center_pos, trace_pos, trace_vals, fitted_vals)
+                        center_pos, trace_pos, trace_vals, fitted_vals,
+                        fit_mode=self.vert_fit_mode_combo.currentData())
     
     def _on_finished(self, user_abort: bool, message: str, update_original: bool):
         """Finalize when scan completes."""

@@ -6,7 +6,7 @@ from typing import Callable, List, Optional, Tuple
 import numpy as np
 from scipy.optimize import curve_fit
 
-from PyQt6.QtCore import QThread, pyqtSignal, Qt
+from PyQt6.QtCore import QThread, pyqtSignal, pyqtSlot, Qt, QMetaObject
 from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QFormLayout,
     QPushButton, QLineEdit, QLabel, QMessageBox, QComboBox,
@@ -461,7 +461,11 @@ class FindFocusTab(QWidget):
         self.stop_btn.setEnabled(False)
         self.status_lbl.setText("Done." if not user_abort else "Stopped.")
         self.result_lbl.setText(message)
-        self._worker = None
+        # Wait for the thread to exit before dropping the last reference
+        # (finished is emitted from inside run()), else Qt aborts the process.
+        worker, self._worker = self._worker, None
+        if worker is not None:
+            worker.wait()
         self.controller.log(f"Find focus: {message}")
 
     # ── Agent API ─────────────────────────────────────────────────────────────
@@ -510,10 +514,29 @@ class FindFocusTab(QWidget):
         _set_text(self.z_fine_step_size,  "z_fine_step_size")
         _set_text(self.wait_ms,           "wait_ms")
 
+        # Bring the GUI to this tab so the operator sees the agent's settings,
+        # mirroring how the 2D scan activates its tab.
+        self.controller.scan_signals.activate_tab.emit("Find Focus")
         return warnings
 
+    @pyqtSlot()
+    def _agent_reset_focus(self):
+        """Reset plots/accumulators before an agent run (runs on the GUI thread)."""
+        self._heights.clear()
+        self._spot_sizes.clear()
+        self._scan_stage.clear()
+        self._current_stage = "rough"
+        for ax, canvas in ((self.ax_top, self.canvas_top),
+                           (self.ax_bot, self.canvas_bot)):
+            ax.clear()
+            ax.grid(True, alpha=0.3)
+            canvas.draw_idle()
+        self.result_lbl.setText("")
+        self.status_lbl.setText("Agent focusing…")
+
     def run_find_focus_blocking(self) -> dict:
-        """Run the focus scan in the calling thread (for agent use)."""
+        """Run the focus scan (for agent use) with the same live GUI plotting
+        as a manual run, then block until it finishes."""
         if not self.galvo or not self.btt:
             return {"error": "Galvo and BTT are required for focus finding"}
         try:
@@ -531,10 +554,15 @@ class FindFocusTab(QWidget):
         except ValueError as e:
             return {"error": f"Invalid parameter: {e}"}
 
+        # Activate the tab and reset its plots on the GUI thread.
+        self.controller.scan_signals.activate_tab.emit("Find Focus")
+        QMetaObject.invokeMethod(self, "_agent_reset_focus",
+                                 Qt.ConnectionType.QueuedConnection)
+
         n = max(2, n_gsteps)
         galvo_xs = np.linspace(gx_start, gx_end, n)
         galvo_ys = np.linspace(gy_start, gy_end, n)
-        stop_flag = [False]
+        self._stop_flag[0] = False
 
         worker = _FindFocusWorker(
             galvo_xs=galvo_xs, galvo_ys=galvo_ys,
@@ -544,17 +572,25 @@ class FindFocusTab(QWidget):
             set_z_fn=lambda z: self.btt.focus(z),
             set_galvo_fn=lambda x, y: self.galvo.move_xy(x, y),
             measure_fn=self._measure_fn,
-            stop_flag_ref=stop_flag,
+            stop_flag_ref=self._stop_flag,
             wait_s=wait_s,
         )
 
+        # Live plotting: same GUI handlers the manual run uses.
+        worker.progress.connect(self._on_progress,           Qt.ConnectionType.QueuedConnection)
+        worker.height_done.connect(self._on_height_done,     Qt.ConnectionType.QueuedConnection)
+        worker.stage_complete.connect(self._on_stage_complete, Qt.ConnectionType.QueuedConnection)
+        worker.finished.connect(self._on_finished,           Qt.ConnectionType.QueuedConnection)
+
         result_holder: dict = {}
 
-        def _on_finished(user_abort: bool, message: str):
+        def _capture(user_abort: bool, message: str):
             result_holder["user_abort"] = user_abort
             result_holder["message"]    = message
 
-        worker.finished.connect(_on_finished, Qt.ConnectionType.DirectConnection)
+        # DirectConnection captures the result synchronously before wait() returns.
+        worker.finished.connect(_capture, Qt.ConnectionType.DirectConnection)
+        self._worker = worker
         worker.start()
         worker.wait()
 

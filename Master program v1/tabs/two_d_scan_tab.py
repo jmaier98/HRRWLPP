@@ -168,10 +168,10 @@ class TwoDScanTab(QWidget):
 
         if self.galvo is not None:
             # Prefer a *combined* move for galvo, to avoid time skew between axes
-            self.AXIS_XY_SETTERS['Galvo (unitless)'] = lambda x, y: self.galvo.movexy(float(x), float(y))
+            self.AXIS_XY_SETTERS['Galvo (unitless)'] = lambda x, y: self.galvo.move(float(x), float(y))
             # Fallback individual setters (if needed)
-            self.AXIS_X_SETTERS['Galvo X'] = lambda x: self.galvo.movexy(float(x), 0.0)
-            self.AXIS_Y_SETTERS['Galvo Y'] = lambda y: self.galvo.movexy(0.0, float(y))
+            self.AXIS_X_SETTERS['Galvo X'] = lambda x: self.galvo.move(float(x), self.state.settings.get("galvo_y_position", 0.0))
+            self.AXIS_Y_SETTERS['Galvo Y'] = lambda y: self.galvo.move(self.state.settings.get("galvo_x_position", 0.0), float(y))
 
         if self.k2400 is not None:
             self.AXIS_X_SETTERS['Keithley V (X)'] = lambda x: self.k2400.ramp_voltage(float(x))

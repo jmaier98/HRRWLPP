@@ -4,7 +4,7 @@ import time
 from PyQt6.QtCore import QThread, pyqtSignal, Qt
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
-    QPushButton, QLineEdit, QLabel, QMessageBox, QGroupBox
+    QPushButton, QLineEdit, QLabel, QMessageBox, QGroupBox, QComboBox
 )
 from PyQt6.QtGui import QDoubleValidator, QIntValidator, QFont
 
@@ -14,9 +14,9 @@ class _ReaderWorker(QThread):
     reading = pyqtSignal(float, float)      # raw_value, resistance
     finished = pyqtSignal(bool, str)        # user_abort, message
 
-    def __init__(self, lockin, shunt_ohms: float, applied_voltage: float, interval_ms: int = 100):
+    def __init__(self, read_fn, shunt_ohms: float, applied_voltage: float, interval_ms: int = 100):
         super().__init__()
-        self._lockin = lockin
+        self._read_fn = read_fn
         self._Rshunt = float(shunt_ohms)
         self._interval = max(10, int(interval_ms)) / 1000.0
         self._applied_voltage = float(applied_voltage)
@@ -41,9 +41,7 @@ class _ReaderWorker(QThread):
         try:
             while not self._stop:
                 try:
-                    # Choose the lock-in quantity you want to display:
-                    # val = float(self._lockin.read_r())   # magnitude
-                    val = float(self._lockin.read_x())     # in-phase (default)
+                    val = float(self._read_fn())
                 except Exception as e:
                     self.finished.emit(True, f"Lock-in read error: {e}")
                     return
@@ -92,6 +90,9 @@ class LiveLockinTab(QWidget):
         dv_any = QDoubleValidator(bottom=-1e300, top=1e300, decimals=9, parent=self)
         iv_ms  = QIntValidator(10, 60000, self)  # 10 ms .. 60 s
 
+        self.lockin_combo = QComboBox()
+        self.lockin_combo.addItems(["Lock-in 1 (GPIB 18)", "Lock-in 2 (GPIB 8)"])
+
         self.shunt_entry = QLineEdit("1000000")   # Ohms
         self.shunt_entry.setValidator(dv_pos)
         self.shunt_entry.setToolTip("Shunt resistance in ohms (used by your calculation).")
@@ -111,6 +112,7 @@ class LiveLockinTab(QWidget):
         buttons_row.addWidget(self.start_btn)
         buttons_row.addWidget(self.stop_btn)
 
+        controls_layout.addRow("Lock-in:", self.lockin_combo)
         controls_layout.addRow("Shunt R (Ω):", self.shunt_entry)
         controls_layout.addRow("Applied Voltage (V):", self.appliedV_entry)
         controls_layout.addRow("Read period (ms):", self.period_ms_entry)
@@ -184,8 +186,14 @@ class LiveLockinTab(QWidget):
             QMessageBox.warning(self, "Input error", "Shunt resistance must be > 0.")
             return
 
+        # Resolve read function from dropdown selection
+        if self.lockin_combo.currentIndex() == 0:
+            read_fn = self.lockin.read_x
+        else:
+            read_fn = self.lockin.read_x2
+
         # Start worker
-        self.worker = _ReaderWorker(self.lockin, Rshunt, applied_voltage=appliedV, interval_ms=period_ms)
+        self.worker = _ReaderWorker(read_fn, Rshunt, applied_voltage=appliedV, interval_ms=period_ms)
         self.worker.reading.connect(self._on_reading, Qt.ConnectionType.QueuedConnection)
         self.worker.finished.connect(self._on_finished, Qt.ConnectionType.QueuedConnection)
         self.worker.start()

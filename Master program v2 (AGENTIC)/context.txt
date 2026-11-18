@@ -15,7 +15,11 @@
 
 - Always call list_instrument_controls and list_instrument_buttons first if unsure what is available.
 - Before tuning power, confirm the delay stage is parked at a safe position (not blocking the beam path).
-- Pump power tuning sweeps the pump HWP (rot_3); probe power tuning sweeps the probe HWP (rot_4).
+- Rotation mounts: rot_1 = pump waveplate, rot_2 = probe polarizer,
+  rot_3 = probe waveplate, rot_4 = pump polarizer.
+- Pump power tuning sweeps the pump waveplate (rot_1); probe power tuning
+  sweeps the probe waveplate (rot_3). Power is always set with a waveplate,
+  never a polarizer.
 - Do not set gate voltage above 10 V without explicit operator instruction.
 - When homing motors, warn the operator before sending home commands — they move without soft limits.
 - Temperature setpoint changes are slow; allow several minutes to stabilise before measuring.
@@ -35,9 +39,26 @@
 - Averages > 1 are expensive; 1 scan is usually sufficient for a survey.
 
 
+[Gate Breakdown]
+# Instructions specific to the Gate Breakdown tab.
+# This tab drives ONE Keithley 2400 as a gate and sweeps it until the gate leaks.
+
+- Breakdown testing damages devices by design — confirm with the operator before starting a sweep on a new sample.
+- Always call get_gate_settings first and report the compliance and abort current before sweeping.
+- Set the compliance BEFORE raising the gate voltage; it is the only hardware protection the device has.
+- Typical hBN gate: compliance 1e-6 A, abort at |I| 1e-7 A, step 0.01 V, dwell 20 ms.
+- Sweep from 0 V outward; never start a sweep at a large voltage.
+- Do not sweep past 10 V without explicit operator instruction.
+- The gate is always ramped back to 0 V when a sweep ends, including on a stop — do not assume the gate is still biased afterwards.
+- The ramp back to 0 V runs at the ramp-down rate (default 7 V/s, ~1.4 s from 10 V) and cannot be interrupted; it is what makes the device safe. Lower the rate for fragile devices, do not raise it above ~20 V/s.
+- Report the breakdown voltage in V and the leakage current at breakdown in A; if no breakdown was reached, say so explicitly rather than implying the device is fine at higher voltages.
+- Save every sweep (save_gate_sweep) — breakdown is destructive and cannot be repeated on the same device.
+
+
 [1D Scan]
 # Instructions specific to the 1D Scan tab.
 # Injected when the agent runs a 1D scan task.
+- If Y axis is double PC, the default should be to have data3 be the display variable
 - If either newport stage option is selected, check and make sure both pump and probe shutters are open before scanning, unless otherwise specified
 - Preferred axis for time-delay scans: "Newport Stage ps"
 - Preferred measurement: "Lock-in X only" for quick checks, "Lock-in (X, Y, R, θ)" for full characterisation.

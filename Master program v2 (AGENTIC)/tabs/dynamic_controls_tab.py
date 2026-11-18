@@ -20,7 +20,7 @@ from PyQt6.QtWidgets import (
     QScrollArea, QGroupBox, QLabel, QLineEdit, QPushButton, QApplication,
     QSizePolicy, QFrame,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QDoubleValidator
 
 from helpers.power_tuners import ProbeTuner, PumpTuner, ProbeCalibrationScanner
@@ -29,6 +29,9 @@ DEFAULT_FEEDRATE = 1000
 
 
 class DynamicControlsTab(QWidget):
+    # Emitted from the gate-ramp thread with a status message when it ends.
+    gate_ramp_done = pyqtSignal(str)
+
     def __init__(self, controller, parent=None):
         super().__init__(parent)
         self.controller = controller
@@ -46,13 +49,16 @@ class DynamicControlsTab(QWidget):
 
         self._tuner_thread = None
         self._cal_thread   = None
+        self._gate_thread: threading.Thread | None = None
+        self._gate_abort:  threading.Event  | None = None
+        self.gate_ramp_done.connect(self._on_gate_ramp_done)
 
         # ── Entry controls (label, go-handler) ───────────────────────────────
         self._entry_defs: list[tuple[str, callable]] = [
-            ("Pump waveplate (°)",         self._go_pump_polarizer),
-            ("Probe waveplate (°)",        self._go_probe_polarizer),
-            ("Probe polarizer (°)",        self._go_pump_hwp),
-            ("Pump polarizer (°)",         self._go_probe_hwp),
+            ("Pump waveplate (°)",         self._go_pump_waveplate),
+            ("Probe waveplate (°)",        self._go_probe_waveplate),
+            ("Probe polarizer (°)",        self._go_probe_polarizer),
+            ("Pump polarizer (°)",         self._go_pump_polarizer),
             ("Pump power (µW)",            self._go_pump_power),
             ("Probe power (µW)",           self._go_probe_power),
             ("Rail 1 (mm)",                self._go_rail1),
@@ -68,6 +74,8 @@ class DynamicControlsTab(QWidget):
             ("Cryo Z (mm)",                self._go_cryo_z),
             ("Objective focus (mm)",       self._go_focus),
             ("Gate voltage (V)",           self._go_gate_v),
+            ("Keithley ramp step (V)",     self._go_keithley_ramp_step),
+            ("Keithley ramp wait (ms)",    self._go_keithley_ramp_wait),
             ("Temperature setpoint (K)",   self._go_temperature),
             ("Spectrometer wavelength (nm)", self._go_spec_wavelength),
             ("Spectrometer slew (nm/min)", self._go_spec_slew),
@@ -82,8 +90,8 @@ class DynamicControlsTab(QWidget):
             ("Home rails",                 self._btn_home_rails),
             ("Home Rot 1",                 self._btn_home_pump_pol),
             ("Home Rot 2",                 self._btn_home_probe_pol),
-            ("Home Rot 3",                 self._btn_home_pump_hwp),
-            ("Home Rot 4",                 self._btn_home_probe_hwp),
+            ("Home Rot 3",                 self._btn_home_probe_waveplate),
+            ("Home Rot 4",                 self._btn_home_pump_polarizer),
             ("Enable Keithley output",     self._btn_keithley_on),
             ("Disable Keithley output",    self._btn_keithley_off),
             ("Set focus zero",             self._btn_focus_zero),
@@ -206,7 +214,14 @@ class DynamicControlsTab(QWidget):
 
     @staticmethod
     def _fmt(val) -> str:
-        return f"{val:.5g}" if isinstance(val, float) else str(val)
+        if isinstance(val, float):
+            return f"{val:.5g}"
+        # Alignment templates hold whole traces; show their size, not the data.
+        if isinstance(val, (list, tuple)):
+            return str(val) if len(val) <= 8 else f"<{len(val)} items>"
+        if isinstance(val, dict):
+            return f"<dict, keys: {', '.join(map(str, val))}>"
+        return str(val)
 
     def _read(self, idx: int) -> float | None:
         text = self._entry_widgets[idx].text().strip()
@@ -244,16 +259,20 @@ class DynamicControlsTab(QWidget):
         self.controller.log(f"Dynamic control: {label} → {v}")
         self.update_state_display()
 
-    def _go_pump_polarizer(self, v):
+    # Mount map (as wired):
+    #   rot_1 = pump waveplate    rot_2 = probe polarizer
+    #   rot_3 = probe waveplate   rot_4 = pump polarizer
+
+    def _go_pump_waveplate(self, v):
         if self.btt: self.btt.rot_1(v, 5000)
 
     def _go_probe_polarizer(self, v):
         if self.btt: self.btt.rot_2(v, DEFAULT_FEEDRATE)
 
-    def _go_pump_hwp(self, v):
+    def _go_probe_waveplate(self, v):
         if self.btt: self.btt.rot_3(v, DEFAULT_FEEDRATE)
 
-    def _go_probe_hwp(self, v):
+    def _go_pump_polarizer(self, v):
         if self.btt: self.btt.rot_4(v, DEFAULT_FEEDRATE)
 
     def _go_pump_power(self, v):
@@ -264,7 +283,9 @@ class DynamicControlsTab(QWidget):
         self._set_status(f"Starting pump tuner → target {v:.2f} µW")
         tuner = PumpTuner(
             target=v, pm=self.PM, btt=self.btt, shutter=self.shutter,
-            initial_wp=self.state.settings.get("rot_3_angle", 0.0),
+            # PumpTuner rotates rot_1 (pump waveplate).
+            initial_wp=self.state.settings.get("rot_1_angle", 0.0),
+            state=self.state,
         )
         self._tuner_thread = tuner
         tuner.reading_ready.connect(self._on_pump_update)
@@ -272,6 +293,7 @@ class DynamicControlsTab(QWidget):
         tuner.finished.connect(tuner.deleteLater)
         tuner.finished.connect(lambda: setattr(self, '_tuner_thread', None))
         tuner.finished.connect(lambda: self._set_status("idle"))
+        self._publish_tuner(tuner, f"Pump power tuning → {v:.2f} µW")
         tuner.start()
 
     def _go_probe_power(self, v):
@@ -282,7 +304,9 @@ class DynamicControlsTab(QWidget):
         self._set_status(f"Starting probe tuner → target {v:.2f} µW")
         tuner = ProbeTuner(
             target=v, pm=self.PM, btt=self.btt, shutter=self.shutter,
-            initial_wp=self.state.settings.get("rot_4_angle", 0.0),  # rot_4 = pump polarizer
+            # ProbeTuner rotates rot_3 (probe waveplate).
+            initial_wp=self.state.settings.get("rot_3_angle", 0.0),
+            state=self.state,
         )
         self._tuner_thread = tuner
         tuner.reading_ready.connect(self._on_probe_update)
@@ -290,6 +314,7 @@ class DynamicControlsTab(QWidget):
         tuner.finished.connect(tuner.deleteLater)
         tuner.finished.connect(lambda: setattr(self, '_tuner_thread', None))
         tuner.finished.connect(lambda: self._set_status("idle"))
+        self._publish_tuner(tuner, f"Probe power tuning → {v:.2f} µW")
         tuner.start()
 
     def _go_rail1(self, v):
@@ -331,7 +356,60 @@ class DynamicControlsTab(QWidget):
         if self.btt: self.btt.focus(v)
 
     def _go_gate_v(self, v):
-        if self.keithley: self.keithley.ramp_voltage(v)
+        """Ramp the gate. From the GUI the ramp runs in a background thread so
+        the window stays responsive; agent/worker callers block until the gate
+        arrives. A new target aborts the ramp in progress and carries on from
+        wherever it stopped."""
+        if not self.keithley:
+            return
+        prev = self._gate_thread
+        if prev is not None and prev.is_alive():
+            self._gate_abort.set()
+
+        if threading.current_thread() is not threading.main_thread():
+            if prev is not None:
+                prev.join()
+            self.keithley.ramp_voltage(v)
+            return
+
+        abort = threading.Event()
+
+        def _run():
+            if prev is not None:
+                prev.join()   # one ramp on the Keithley at a time
+            try:
+                self.keithley.ramp_voltage(v, abort_flag=abort.is_set)
+                if abort.is_set():
+                    vs = self.keithley.get_voltage_setpoint()
+                    at = f"{vs:g} V" if vs is not None else "unknown voltage"
+                    msg = f"Gate ramp to {v:g} V interrupted at {at}"
+                else:
+                    msg = f"Gate at {v:g} V"
+            except Exception as e:
+                msg = f"Error — Gate voltage (V): {e}"
+            self.gate_ramp_done.emit(msg)
+
+        self._gate_abort  = abort
+        self._gate_thread = threading.Thread(target=_run, name="gate-ramp", daemon=True)
+        self._gate_thread.start()
+        self._set_status(f"Ramping gate to {v:g} V…")
+
+    def _on_gate_ramp_done(self, msg: str):
+        self._set_status(msg)
+        self.update_state_display()
+
+    def _go_keithley_ramp_step(self, v):
+        """Volts per step for every Keithley voltage change (not the breakdown sweep)."""
+        step = abs(float(v))
+        if step <= 0:
+            raise ValueError("ramp step must be > 0 V")
+        self.state.settings["keithley_ramp_step_v"] = step
+        self.state.save()
+
+    def _go_keithley_ramp_wait(self, v):
+        """Wait between Keithley ramp steps, entered in ms and stored in seconds."""
+        self.state.settings["keithley_ramp_dwell_s"] = max(0.0, float(v)) / 1000.0
+        self.state.save()
 
     def _go_temperature(self, v):
         if self.lakeshore: self.lakeshore.set_temp(v)
@@ -380,21 +458,25 @@ class DynamicControlsTab(QWidget):
     def _btn_home_pump_pol(self):
         if self.btt:
             self.btt.home_rot1()
+            self.state.settings["rot_1_angle"] = 0.0
             self.controller.log("Pump waveplate (Rot 1) homed")
+            self.update_state_display()
 
     def _btn_home_probe_pol(self):
         if self.btt:
             self.btt.home_rot2()
-            self.controller.log("Probe waveplate (Rot 2) homed")
+            self.state.settings["rot_2_angle"] = 0.0
+            self.controller.log("Probe polarizer (Rot 2) homed")
+            self.update_state_display()
 
-    def _btn_home_pump_hwp(self):
+    def _btn_home_probe_waveplate(self):
         if self.btt:
             self.btt.home_rot3()
             self.state.settings["rot_3_angle"] = 0.0
-            self.controller.log("Probe polarizer (Rot 3) homed")
+            self.controller.log("Probe waveplate (Rot 3) homed")
             self.update_state_display()
 
-    def _btn_home_probe_hwp(self):
+    def _btn_home_pump_polarizer(self):
         if self.btt:
             self.btt.home_rot4()
             self.state.settings["rot_4_angle"] = 0.0
@@ -433,17 +515,28 @@ class DynamicControlsTab(QWidget):
         cal.finished.connect(cal.deleteLater)
         cal.finished.connect(lambda: setattr(self, '_cal_thread', None))
         cal.finished.connect(lambda: self._set_status("idle"))
+        self._publish_tuner(cal, "Probe power calibration sweep")
         cal.start()
 
     # ── Tuner callbacks ───────────────────────────────────────────────────────
 
+    def _publish_tuner(self, worker, label: str):
+        """Relay a tuner/calibration worker's readings to the controller signals
+        so the Power Meter tab switches to the front and plots the tuning live."""
+        sigs = self.controller.scan_signals
+        worker.reading_ready.connect(sigs.tuner_reading)
+        worker.phase_changed.connect(sigs.tuner_phase)
+        worker.finished.connect(sigs.tuner_finished)
+        sigs.activate_tab.emit("Power Meter")
+        sigs.tuner_started.emit(label)
+
     def _on_pump_update(self, angle: float, power: float):
-        self.state.settings["rot_4_angle"] = angle   # rot_4 = pump polarizer
+        self.state.settings["rot_1_angle"] = angle   # rot_1 = pump waveplate
         self.state.settings["pump_power"] = power
         self.update_state_display()
 
     def _on_probe_update(self, angle: float, power: float):
-        self.state.settings["rot_3_angle"] = angle   # rot_3 = probe polarizer
+        self.state.settings["rot_3_angle"] = angle   # rot_3 = probe waveplate
         self.state.settings["probe_power"] = power
         self.update_state_display()
 
@@ -465,7 +558,9 @@ class DynamicControlsTab(QWidget):
                 return
 
     def _on_stop_all(self):
-        """Abort any running tuner or calibration thread."""
+        """Abort any running tuner, calibration thread or gate ramp."""
+        if self._gate_abort is not None:
+            self._gate_abort.set()
         for thread_attr in ("_tuner_thread", "_cal_thread"):
             t = getattr(self, thread_attr, None)
             if t and t.isRunning():
@@ -508,8 +603,17 @@ class DynamicControlsTab(QWidget):
                         Qt.ConnectionType.DirectConnection,
                     )
                     _done.wait()   # pure-Python wait, no Qt event loop needed
+                # A tuner that gave up (target out of range, fit failure)
+                # exits normally, so without this the agent would be told the
+                # power was set when the waveplate never moved to it.
+                err = getattr(t, "error", None) if t is not None else None
+                if err:
+                    self._set_status(err)
+                    raise RuntimeError(f"{lbl}: {err}")
                 self.controller.log(f"Agent set '{lbl}' -> {value}")
-                self.controller.notify_control_set(lbl, value)
+                # If a tuner ran, stay on the Power Meter tab so the operator
+                # can see the finished tuning curve.
+                self.controller.notify_control_set(lbl, value, activate=t is None)
                 self.update_state_display()
                 return
         raise ValueError(f"Unknown control: '{label}'")

@@ -15,6 +15,21 @@ import numpy as np
 from PyQt6.QtCore import QObject, pyqtSignal
 
 
+class _LiveStopFlag:
+    """Indexable view of controller._agent_stop_requested.
+
+    Passed to blocking helpers that poll ``stop_flag[0]``; reading it live (rather
+    than snapshotting the bool) is what lets a long wait actually be aborted.
+    """
+    __slots__ = ("_ctrl",)
+
+    def __init__(self, ctrl):
+        self._ctrl = ctrl
+
+    def __getitem__(self, _idx):
+        return bool(self._ctrl._agent_stop_requested)
+
+
 class ScanSignals(QObject):
     """Qt signals emitted by the controller so tabs stay in sync with agent actions."""
     # Live scan data
@@ -45,12 +60,34 @@ class ScanSignals(QObject):
     # scan_3d_layer_done: layer count (1-based)
     scan_3d_layer_done = pyqtSignal(int)
 
+    # 4D scan agent signals (spatial map with an inner 2D scan at every pixel)
+    # scan_4d_configured: full settings dict (same keys as FourDScanTab.apply_settings)
+    scan_4d_configured = pyqtSignal(object)
+    # scan_4d_started: {'xs': [...], 'ys': [...], 'a': [...], 'b': [...], 'n_scans': int}
+    scan_4d_started    = pyqtSignal(object)
+    # scan_4d_point: ix, iy, ia, ib, x, y, a, b, d6
+    scan_4d_point      = pyqtSignal(int, int, int, int, float, float, float, float, tuple)
+    # scan_4d_pixel_done: spatial pixel count (1-based), or 0 when the scan ends
+    scan_4d_pixel_done = pyqtSignal(int)
+    # scan_4d_scan_done: repeat/average index (1-based)
+    scan_4d_scan_done  = pyqtSignal(int)
+
     # Agent set an instrument control — dynamic controls tab should update its field
     # payload: (label: str, value: float)
     control_set = pyqtSignal(str, float)
 
+    # Power tuner lifecycle — the Power Meter tab plots the tuning live
+    tuner_started  = pyqtSignal(str)            # description, e.g. "Probe power tuning → 100 µW"
+    tuner_phase    = pyqtSignal(str)            # new scan phase, e.g. "Rough sweep"
+    tuner_reading  = pyqtSignal(float, float)   # (angle_deg, power_uW)
+    tuner_finished = pyqtSignal()
+
     # Agent or agent-stop requested — all running scans/tuners should abort
     stop_all = pyqtSignal()
+
+    # Temperature setpoint changed (by a scan axis or the agent) — the
+    # Temperature Control tab updates its setpoint box.
+    temperature_setpoint_set = pyqtSignal(float)
 
     # Ask the main window to switch to a named tab
     activate_tab = pyqtSignal(str)
@@ -119,6 +156,7 @@ class MicroscopeController:
         pm      = self.get_instrument("PM")
         shutter = self.get_instrument("Shutter")
         k2400   = self.get_instrument("Keithley2400")
+        mirrors = self.get_instrument("Mirrors")
 
         setters: Dict[str, Callable[[float], None]] = {}
 
@@ -130,12 +168,20 @@ class MicroscopeController:
             setters["Galvo X (mu)"] = lambda x: galvo.move_x(float(x))
             setters["Galvo Y (mu)"] = lambda y: galvo.move_y(float(y))
 
+        # Mirror 1 (x/y offset mirror), absolute position in microsteps
+        if mirrors is not None:
+            setters["Mirror X (µsteps)"] = lambda x: mirrors.mirror1_x(float(x))
+            setters["Mirror Y (µsteps)"] = lambda y: mirrors.mirror1_y(float(y))
+
         if k2400 is not None:
             setters["Keithley V"] = lambda x: k2400.ramp_voltage(float(x))
 
         if btt is not None:
-            setters["Rot 1 (°)"]      = lambda x: btt.rot_1(float(x), 5000)
-            setters["Pump Waveplate"] = lambda x: btt.rot_3(float(x), 5000)
+            setters["Pump Waveplate"]  = lambda x: btt.rot_1(float(x), 5000)
+            setters["Probe Polarizer"] = lambda x: btt.rot_2(float(x), 5000)
+            setters["Probe Waveplate"] = lambda x: btt.rot_3(float(x), 5000)
+            setters["Pump Polarizer"]  = lambda x: btt.rot_4(float(x), 5000)
+            setters["Objective Z (mm)"] = lambda x: self.set_objective_z(float(x))
 
         if btt is not None and pm is not None and shutter is not None:
             setters["Pump Power (µW)"] = lambda x: tune_pump_power_blocking(
@@ -149,6 +195,9 @@ class MicroscopeController:
             setters["Fast Probe Power (µW)"] = lambda x: set_fast_probe_power_blocking(
                 float(x), btt, self.state
             )
+
+        if self.get_instrument("Lakeshore331") is not None:
+            setters["Temperature (K)"] = lambda x: self.set_temperature_blocking(float(x))
 
         setters["(dummy) no-op axis"] = lambda x: None
         return setters
@@ -177,10 +226,14 @@ class MicroscopeController:
                 lockin.read_x2(),
                 math.nan, math.nan, math.nan,
             )
-            funcs["Double PC (X,Y of both)"] = lambda: (
-                *lockin.read_xy(),
-                *lockin.read_xy2(),
-            )
+            def _double_pc():
+                # data1..3 = lockin 1 (X, Y, Aux1) = current; data4..5 = lockin 2 (X, Y) = voltage
+                # data6 = calculated resistance |V| / |I|
+                ix, iy, aux1 = lockin.read_xy()
+                vx, vy, _ = lockin.read_xy2()
+                return (ix, iy, aux1, vx, vy, _safe_div(math.hypot(vx, vy), math.hypot(ix, iy)))
+
+            funcs["Double PC (X,Y of both)"] = _double_pc
 
         if lockin is not None and lakeshore is not None:
             funcs["4 point probe vs temp"] = lambda: (
@@ -208,10 +261,67 @@ class MicroscopeController:
 
     # ── State snapshot ────────────────────────────────────────────────────────
 
-    def notify_control_set(self, label: str, value: float):
-        """Emit control_set so the Dynamic Controls tab can update its field."""
-        self.scan_signals.activate_tab.emit("Dynamic Controls")
+    def notify_control_set(self, label: str, value: float, activate: bool = True):
+        """Emit control_set so the Dynamic Controls tab can update its field.
+
+        activate=False skips switching to the Dynamic Controls tab (used after
+        power tuning so the Power Meter tab keeps showing the tuning curve).
+        """
+        if activate:
+            self.scan_signals.activate_tab.emit("Dynamic Controls")
         self.scan_signals.control_set.emit(label, value)
+
+    # ── Objective (Z) focus position ───────────────────────────────
+
+    def get_objective_z(self) -> float:
+        """Absolute objective focus position (mm), as persisted in the state file."""
+        return float(self.state.settings.get("focus_position", 0.0))
+
+    def set_objective_z(self, z: float):
+        """Move the objective to an absolute Z (mm) and keep the GUI in sync.
+
+        BTT.focus() persists the new position to the state file itself, so the
+        objective position is not lost between runs of the program.
+        """
+        btt = self.get_instrument("BTT")
+        if btt is None:
+            raise RuntimeError("BTT is not connected — cannot move the objective.")
+        z = float(z)
+        btt.focus(z)
+        self.scan_signals.control_set.emit("Objective focus (mm)", z)
+
+    # ── Temperature setpoint ──────────────────────────────────────
+
+    def get_temperature(self) -> float:
+        """Current sample temperature in K."""
+        ls = self.get_instrument("Lakeshore331")
+        if ls is None:
+            raise RuntimeError("Lakeshore331 is not connected.")
+        return float(ls.read_temperature("K"))
+
+    def set_temperature_blocking(self, setpoint: float, status_cb=None) -> float:
+        """Set the temperature setpoint and block until the reading settles.
+
+        Used as a scan axis, so it must not return until the sample is actually
+        at temperature. Settle tolerance / hold time / timeout come from the
+        persisted state settings, which the Temperature Control tab edits.
+        """
+        from helpers.temperature import set_temperature_blocking
+
+        ls = self.get_instrument("Lakeshore331")
+        setpoint = float(setpoint)
+        st = self.state.settings
+        final = set_temperature_blocking(
+            setpoint, ls,
+            tolerance_k=float(st.get("temp_tolerance_k", 0.5)),
+            settle_s=float(st.get("temp_settle_s", 10.0)),
+            timeout_s=float(st.get("temp_timeout_s", 900.0)),
+            status_cb=status_cb or (lambda m: None),
+            stop_flag=_LiveStopFlag(self),
+        )
+        st["temp_setpoint"] = setpoint
+        self.scan_signals.temperature_setpoint_set.emit(setpoint)
+        return final
 
     def request_stop_all(self):
         """Immediately flag all running scans to abort, then notify tabs."""
@@ -235,11 +345,15 @@ class MicroscopeController:
         n_points: int,
         n_scans: int = 1,
         wait_ms: int = 10,
+        interleave: bool = False,
     ) -> dict:
         """
         Run a 1D scan entirely in the calling thread (for agent use).
         Returns a dict with 'data' (list of rows), 'png_b64', and 'stats'.
         """
+        # Bring the 1D Scan tab to the front as soon as the agent starts a scan
+        self.scan_signals.activate_tab.emit("1D Scan")
+
         set_x = self.AXIS_SETTERS.get(axis_key)
         measure = self.MEASUREMENT_FUNCS.get(meas_key)
         if set_x is None:
@@ -251,7 +365,6 @@ class MicroscopeController:
         wait_s = max(0.0, wait_ms / 1000.0)
         all_scans: list[np.ndarray] = []
 
-        self.scan_signals.activate_tab.emit("1D Scan")
         self.log(f"Agent 1D scan: axis={axis_key} meas={meas_key} "
                  f"x=[{x_start},{x_end}] n={n_points} avg={n_scans}")
 
@@ -263,13 +376,18 @@ class MicroscopeController:
             "n_points": n_points,
             "n_scans":  n_scans,
             "wait_ms":  wait_ms,
+            "interleave": bool(interleave),
         })
         self._agent_stop_requested = False
+        from tabs.four_d_scan_tab import _interleave_order
+        order = (_interleave_order(len(xs)) if interleave
+                 else list(range(len(xs))))
         self.scan_signals.scan_started.emit(xs)
 
         for scan_idx in range(1, max(1, int(n_scans)) + 1):
             scan = np.full((len(xs), 6), np.nan)
-            for ix, x in enumerate(xs):
+            for ix in order:
+                x = xs[ix]
                 if self._agent_stop_requested:
                     self.log("Agent scan stopped by user.")
                     return {"error": "Scan stopped by user."}
@@ -331,11 +449,17 @@ class MicroscopeController:
         wait_ms: int = 5,
         x_step: float | None = None,
         y_step: float | None = None,
+        measure_fn: Callable | None = None,
     ) -> dict:
-        """Run a 2D raster scan in the calling thread (for agent use)."""
+        """Run a 2D raster scan in the calling thread (for agent use).
+
+        If measure_fn is given it is used directly (lets the caller supply a tab's
+        own measurement function); otherwise meas_key is looked up in
+        MEASUREMENT_FUNCS.
+        """
         set_x   = self.AXIS_SETTERS.get(x_key)
         set_y   = self.AXIS_SETTERS.get(y_key)
-        measure = self.MEASUREMENT_FUNCS.get(meas_key)
+        measure = measure_fn if measure_fn is not None else self.MEASUREMENT_FUNCS.get(meas_key)
         if set_x is None:
             return {"error": f"Unknown X axis: {x_key}"}
         if set_y is None:
@@ -442,12 +566,18 @@ class MicroscopeController:
         fast_axis: str = "X",
         wait_ms: int = 5,
         z_reset_ms: int = 0,
+        measure_fn: Callable | None = None,
     ) -> dict:
-        """Run a 3D scan in the calling thread (for agent use). Returns stats + PNG."""
+        """Run a 3D scan in the calling thread (for agent use). Returns stats + PNG.
+
+        If measure_fn is given it is used directly (lets the caller supply a tab's
+        own measurement function); otherwise meas_key is looked up in
+        MEASUREMENT_FUNCS.
+        """
         set_z   = self.AXIS_SETTERS.get(z_key)
         set_x   = self.AXIS_SETTERS.get(x_key)
         set_y   = self.AXIS_SETTERS.get(y_key)
-        measure = self.MEASUREMENT_FUNCS.get(meas_key)
+        measure = measure_fn if measure_fn is not None else self.MEASUREMENT_FUNCS.get(meas_key)
         if set_z is None:
             return {"error": f"Unknown Z axis: {z_key}"}
         if set_x is None:
